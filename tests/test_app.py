@@ -258,8 +258,11 @@ class CasePilotTests(unittest.TestCase):
     def test_note_updates_ticket_recency(self):
         self.login()
         with connect(self.server.db_path) as db:
-            db.execute("UPDATE tickets SET updated_at='2020-01-01T00:00:00Z' WHERE id=1")
-        self.assertEqual(self.request('/api/tickets/1/comments','POST',{'body':'The request owner confirmed the symptom.'})[0],201)
+            # A legacy second-resolution timestamp must sort before a later
+            # update in that same second, without relying on wall-clock speed.
+            db.execute("UPDATE tickets SET updated_at='2030-01-01T00:00:00Z'")
+        with patch('main.utc_now',return_value='2030-01-01T00:00:00.250Z'):
+            self.assertEqual(self.request('/api/tickets/1/comments','POST',{'body':'The request owner confirmed the symptom.'})[0],201)
         self.assertEqual(self.request('/api/tickets')[1]['tickets'][0]['id'],1)
 
     def test_legacy_database_migration_and_hash_upgrade(self):

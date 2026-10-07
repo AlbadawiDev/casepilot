@@ -39,7 +39,7 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def due_in(days: int) -> str:
@@ -90,6 +90,7 @@ def init_db(db_path: Path) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
         CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_tickets_recency ON tickets(julianday(updated_at) DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_tickets_priority ON tickets(priority);
         CREATE TABLE IF NOT EXISTS comments (
           id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL REFERENCES tickets(id),
@@ -454,7 +455,7 @@ class DeskHandler(BaseHTTPRequestHandler):
             where_sql = " WHERE " + " AND ".join(where) if where else ""
             query = """SELECT t.id,t.code,t.title,t.description,t.category,t.priority,t.status,t.requester,
                    t.assignee_id,u.display_name AS assignee,t.created_at,t.updated_at,t.due_at
-                   FROM tickets t LEFT JOIN users u ON u.id=t.assignee_id""" + where_sql + " ORDER BY t.updated_at DESC, t.id DESC"
+                   FROM tickets t LEFT JOIN users u ON u.id=t.assignee_id""" + where_sql + " ORDER BY julianday(t.updated_at) DESC, t.id DESC"
             if params.get("urgent", [""])[0] == "1":
                 query = query.rsplit(" ORDER BY", 1)[0] + " ORDER BY CASE t.priority WHEN 'critical' THEN 0 ELSE 1 END, t.due_at, t.id"
             page, page_size = 1, 25
