@@ -1,0 +1,25 @@
+name: Python integration checks
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.14']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check browser source and frontend unit tests
+        run: |
+          node --check static/app.js
+          node --test tests/frontend.test.cjs
+      - name: Run HTTP integration tests
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v

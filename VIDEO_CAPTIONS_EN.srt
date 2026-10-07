@@ -1,0 +1,23 @@
+1
+00:00:00,000 --> 00:00:07,000
+CasePilot | IT service operations demo
+
+2
+00:00:07,000 --> 00:00:17,000
+A dashboard for tracking tickets, priorities, deadlines, and resolutions.
+
+3
+00:00:17,000 --> 00:00:27,000
+Search and filter requests to focus on what matters most.
+
+4
+00:00:27,000 --> 00:00:38,000
+Create a request with the requester, category, priority, and description.
+
+5
+00:00:38,000 --> 00:00:49,000
+Update ticket status and review the service workflow.
+
+6
+00:00:49,000 --> 00:00:54,800
+Each change is saved in an auditable activity history.

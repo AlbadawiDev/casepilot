@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0e1727" />
+  <meta name="description" content="CasePilot, a portfolio demonstration of IT service-desk workflows, audit logs and SLA reporting." />
+  <title>CasePilot · Service operations</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="login-screen" class="login-shell">
+    <div class="login-art">
+      <div class="brand large"><span class="brand-icon" aria-hidden="true">✦</span><span>casepilot<span class="brand-dot">.</span></span></div>
+      <div class="login-message"><div class="overline light">SERVICE OPERATIONS PLATFORM</div><h1>Clarity for every support request.</h1><p>A complete service-desk workspace, built as an independent software engineering portfolio project.</p><div class="login-lines"><span>Organize incoming requests</span><span>Prioritize service deadlines</span><span>Track every decision</span></div></div>
+      <div class="login-art-foot">CASEPILOT / PORTFOLIO EDITION <span>2026</span></div>
+    </div>
+    <div class="login-form-area">
+      <div class="login-card"><div class="eyebrow"><span class="status-dot"></span> DEMO ENVIRONMENT</div><h2>Welcome back</h2><p class="subtle">Sign in to your support workspace.</p>
+        <form id="login-form">
+          <label for="username">Username</label><input id="username" name="username" type="text" autocomplete="username" maxlength="64" required />
+          <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required />
+          <p class="form-error" id="login-error" role="alert"></p>
+          <button class="btn primary full" type="submit">Open workspace <span aria-hidden="true">→</span></button>
+        </form>
+        <div class="demo-credentials hidden" id="demo-access"><span class="tiny-label">DEMO ACCESS</span><span><strong>Admin:</strong> admin / demo1234</span><span><strong>Agent:</strong> agent / agent1234</span></div>
+      </div>
+      <p class="login-disclaimer">Demonstration data only. No customer data or external services.</p>
+    </div>
+  </div>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="brand"><span class="brand-icon">✦</span><span>casepilot<span class="brand-dot">.</span></span></div>
+        <p class="workspace-label">WORKSPACE <span class="workspace-dot">01</span></p>
+        <div class="workspace-name"><span class="workspace-mark">S</span><span><strong>Service Operations</strong><small>Internal support</small></span><span class="chevron">⌄</span></div>
+      </div>
+      <nav class="side-nav" aria-label="Main navigation">
+        <div class="nav-caption">WORKSPACE</div>
+        <button data-view="overview" class="nav-button active" type="button"><span class="nav-icon">▦</span> Overview</button>
+        <button data-view="tickets" class="nav-button" type="button"><span class="nav-icon">▤</span> All tickets <span id="nav-ticket-count" class="nav-count">9</span></button>
+        <button data-view="activity" class="nav-button" type="button"><span class="nav-icon">◷</span> Activity log</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="help-card"><div class="help-icon">↗</div><strong>Transparent by design</strong><p>Audit history, role permissions and service-level visibility in one place.</p><a href="https://github.com/AlbadawiDev" target="_blank" rel="noopener noreferrer">View developer profile ↗</a></div>
+        <div class="sidebar-user"><span class="avatar" id="sidebar-avatar">ML</span><div><strong id="sidebar-name">Morgan Lee</strong><small id="sidebar-role">Administrator</small></div><button class="icon-button" id="logout-btn" type="button" title="Sign out" aria-label="Sign out">⇥</button></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div class="topbar-left"><button class="mobile-menu icon-button" id="mobile-menu" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false">☰</button><span class="crumb">Workspace</span><span class="slash">/</span><span id="breadcrumb-current" class="crumb-current">Overview</span></div><div class="topbar-right"><span class="live-pill" role="status"><span></span><span id="connection-status">Checking connection…</span></span><span class="divider-vertical"></span><div class="top-avatar" id="top-avatar">ML</div></div></header>
+      <div class="content">
+        <section id="view-overview" class="view">
+          <div class="page-heading"><div><div class="overline">WORKSPACE / OVERVIEW</div><h1>Service overview<span class="heading-dot">.</span></h1><p>Everything your support team needs to stay on track.</p></div><button class="btn primary" id="new-ticket-overview" type="button">＋ New ticket</button></div>
+          <div class="insight-banner"><div><span class="banner-kicker">OPERATIONS SNAPSHOT</span><h2>Good decisions start with visibility.</h2><p>Manage the queue, spot overdue requests and review progress without switching tools.</p><button id="banner-action" class="banner-button">Review service queue <span aria-hidden="true">↗</span></button></div><div class="banner-visual" aria-hidden="true"><div class="visual-card card-back"><span>INCIDENTS</span><strong>24h</strong><i></i></div><div class="visual-card card-front"><span>WORKFLOW STATUS</span><div class="visual-bars"><b></b><b></b><b></b><b></b><b></b></div><em>LIVE TRACKING</em></div><span class="orbit orbit-one"></span><span class="orbit orbit-two"></span></div></div>
+          <div class="metrics-grid">
+            <article class="metric"><div class="metric-label">Total requests <span class="metric-symbol blue">▤</span></div><strong id="metric-total">—</strong><span class="metric-note">All recorded tickets</span></article>
+            <article class="metric"><div class="metric-label">Active queue <span class="metric-symbol purple">◷</span></div><strong id="metric-active">—</strong><span class="metric-note"><span class="tiny-dot purple-dot"></span> Requires team action</span></article>
+            <article class="metric"><div class="metric-label">Overdue SLA <span class="metric-symbol red">!</span></div><strong id="metric-overdue">—</strong><span class="metric-note"><span class="tiny-dot red-dot"></span> Active and past due</span></article>
+            <article class="metric"><div class="metric-label">Resolution rate <span class="metric-symbol green">✓</span></div><strong id="metric-resolved">—</strong><span class="metric-note">Closed across all requests</span></article>
+          </div>
+          <div class="section-grid"><article class="panel"><div class="panel-header"><div><h3>Ticket workflow</h3><p>Current distribution by status</p></div><span class="panel-icon">◫</span></div><div class="workflow-list" id="workflow-graph"></div></article><article class="panel"><div class="panel-header"><div><h3>Attention required</h3><p>Requests with immediate impact</p></div><span class="panel-icon">◎</span></div><div id="priority-tickets" class="priority-list"></div></article></div>
+          <article class="panel recent-panel"><div class="panel-header"><div><h3>Recently updated</h3><p>Latest movement across the queue</p></div><button type="button" class="text-action" id="see-all-tickets">View all tickets →</button></div><div class="table-wrap"><table><thead><tr><th>REQUEST</th><th>CATEGORY</th><th>PRIORITY</th><th>STATUS</th><th>ASSIGNEE</th></tr></thead><tbody id="overview-ticket-rows"></tbody></table></div></article>
+        </section>
+
+        <section id="view-tickets" class="view hidden"><div class="page-heading"><div><div class="overline">WORKSPACE / TICKETS</div><h1>Service tickets<span class="heading-dot">.</span></h1><p>Search, manage and resolve support work.</p></div><div class="heading-actions"><a class="btn light" id="export-button" href="/api/export.csv" download>↧ Export CSV</a><button id="new-ticket-list" class="btn primary">＋ New ticket</button></div></div>
+          <article class="panel ticket-panel"><div class="filter-row"><div class="search-box"><span aria-hidden="true">⌕</span><input type="search" maxlength="120" id="search-tickets" placeholder="Search requests, people or ticket IDs..." aria-label="Search tickets"></div><select id="filter-status" aria-label="Filter by status"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option></select><select id="filter-priority" aria-label="Filter by priority"><option value="">All priorities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></div>
+          <div class="table-wrap"><table><thead><tr><th>TICKET</th><th>REQUESTER</th><th>PRIORITY</th><th>STATUS</th><th>ASSIGNEE</th><th>DUE DATE</th></tr></thead><tbody id="ticket-rows"></tbody></table></div><div class="table-foot"><span id="ticket-counter" aria-live="polite">Loading tickets…</span><nav class="pagination" aria-label="Ticket pages"><button type="button" class="btn light small" id="previous-page" disabled>← Previous</button><button type="button" class="btn light small" id="next-page" disabled>Next →</button></nav></div></article>
+        </section>
+
+        <section id="view-activity" class="view hidden"><div class="page-heading"><div><div class="overline">WORKSPACE / AUDIT</div><h1>Activity history<span class="heading-dot">.</span></h1><p>An accountable record of every ticket change.</p></div></div><article class="panel activity-panel"><div class="panel-header"><div><h3>Audit trail</h3><p>Events are recorded when tickets change, including comments and assignments.</p></div><span class="panel-icon">◷</span></div><div id="full-activity" class="activity-list"></div></article></section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="create-dialog" class="modal" aria-labelledby="create-title"><form id="create-form"><div class="modal-heading"><div><div class="overline">NEW REQUEST</div><h2 id="create-title">Create a ticket</h2></div><button type="button" class="close-button" data-close="create-dialog" aria-label="Close dialog">×</button></div><div class="modal-inner"><label for="ticket-title">Title</label><input id="ticket-title" name="title" minlength="5" maxlength="110" placeholder="Describe the issue briefly" required><label for="ticket-requester">Requester</label><input id="ticket-requester" name="requester" minlength="2" maxlength="100" placeholder="Full name" required><div class="form-grid"><div><label for="ticket-category">Category</label><select id="ticket-category" name="category"><option>Access</option><option>Software</option><option>Hardware</option><option>Network</option><option>Billing</option><option>Other</option></select></div><div><label for="ticket-priority">Priority</label><select id="ticket-priority" name="priority"><option>medium</option><option>low</option><option>high</option><option>critical</option></select></div></div><label for="ticket-description">Description</label><textarea id="ticket-description" name="description" placeholder="What happened, who is affected, what have you tried?" minlength="8" maxlength="2000" rows="4" required></textarea><p class="form-error" id="create-error" role="alert"></p></div><div class="modal-footer"><button type="button" class="btn light" data-close="create-dialog">Cancel</button><button type="submit" class="btn primary">Create ticket →</button></div></form></dialog>
+
+  <dialog id="detail-dialog" class="modal detail-modal" aria-labelledby="detail-title"><div class="modal-heading"><div><div class="overline" id="detail-code">TICKET</div><h2 id="detail-title">Ticket details</h2></div><button type="button" class="close-button" data-close="detail-dialog" aria-label="Close dialog">×</button></div><div class="modal-inner"><div class="detail-chips" id="detail-chips"></div><p class="detail-description" id="detail-description"></p><div class="detail-facts" id="detail-facts"></div><div class="detail-divider"></div><h3>Update ticket</h3><p id="workflow-hint" class="workflow-hint"></p><div class="form-grid tri"><div><label for="detail-status">Status</label><select id="detail-status"><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option></select></div><div><label for="detail-priority">Priority</label><select id="detail-priority"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></div><div><label for="detail-assignee">Assigned to</label><select id="detail-assignee"><option value="">Unassigned</option></select></div></div><button class="btn primary small" id="save-ticket" type="button">Save changes</button><p class="form-error" id="detail-error" role="alert"></p><div class="detail-divider"></div><h3>Team discussion</h3><div id="detail-comments" class="comments"></div><form id="comment-form"><label for="comment-text">Add internal note</label><textarea id="comment-text" rows="2" minlength="2" maxlength="1000" placeholder="Add a factual update for the team..." required></textarea><button class="btn light small" type="submit">Post note ↗</button></form><div class="detail-divider"></div><h3>Audit trail</h3><div id="detail-audit" class="mini-activity"></div></div></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
