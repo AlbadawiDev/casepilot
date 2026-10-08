@@ -5,7 +5,11 @@ const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (m
 const human = (value) => ({open:'Open', in_progress:'In progress', resolved:'Resolved', low:'Low', medium:'Medium', high:'High', critical:'Critical'}[value] || String(value));
 const dateText = (str) => str ? new Date(str).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '—';
 const initials = (str) => String(str || '—').split(/\s+/).slice(0, 2).map((s)=>s[0]||'').join('').toUpperCase();
-const state = {user:null, csrf:'', users:[], view:'overview', tickets:[], selected:null, toastTimer:null, searchTimer:null, page:1, pages:1, ticketRequest:0};
+const state = {user:null, csrf:'', users:[], view:'overview', tickets:[], selected:null, toastTimer:null, searchTimer:null, page:1, pages:1, sessionVersion:0, ticketRequest:0, overviewRequest:0, activityRequest:0, detailRequest:0};
+
+// A response belongs to the sign-in that started it, even when another account
+// has since signed in. Request counters also prevent older reads winning races.
+const currentSession = version => Boolean(state.user) && version === state.sessionVersion;
 
 function connectionStatus(connected) {
   const badge = $('#connection-status');
@@ -14,6 +18,7 @@ function connectionStatus(connected) {
 }
 
 function clearSession(message='') {
+  state.sessionVersion++;
   document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
   state.user=null;state.csrf='';state.selected=null;state.users=[];state.tickets=[];
   $('#app-shell').classList.add('hidden');$('#login-screen').classList.remove('hidden');
@@ -21,16 +26,17 @@ function clearSession(message='') {
 }
 
 async function api(path, {method='GET', body=undefined}={}) {
+  const sessionVersion = state.sessionVersion;
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && state.csrf) headers['X-CSRF-Token'] = state.csrf;
   let res;
   try {
     res = await fetch(path, {method, headers, credentials:'same-origin', body:body===undefined?undefined:JSON.stringify(body)});
-    connectionStatus(true);
-  } catch(error) {connectionStatus(false);throw new Error('Cannot reach the workspace. Check that the local server is running.');}
+    if(sessionVersion===state.sessionVersion)connectionStatus(true);
+  } catch(error) {if(sessionVersion===state.sessionVersion)connectionStatus(false);throw new Error('Cannot reach the workspace. Check that the local server is running.');}
   const data = await res.json().catch(()=>({error:'Unexpected server response'}));
-  if (res.status===401 && state.user && path!=='/api/login') clearSession('Your session ended. Sign in again.');
+  if (res.status===401 && currentSession(sessionVersion) && path!=='/api/login') clearSession('Your session ended. Sign in again.');
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
@@ -42,6 +48,8 @@ function toast(message) {
 }
 
 function setAuthenticated(data) {
+  state.sessionVersion++;
+  state.selected=null; state.users=[]; state.tickets=[]; state.page=1; state.pages=1;
   state.user = data.user; state.csrf = data.csrf;
   $('#login-screen').classList.add('hidden'); $('#app-shell').classList.remove('hidden');
   for (const id of ['sidebar-avatar','top-avatar']) $("#"+id).textContent = initials(state.user.name);
@@ -80,8 +88,10 @@ function rowMarkup(t, compact=false) {
 }
 
 async function loadOverview() {
+  const version=state.sessionVersion, request=++state.overviewRequest;
   try {
     const [stats, result, urgent] = await Promise.all([api('/api/stats'), api('/api/tickets?page_size=5'), api('/api/tickets?urgent=1&page_size=100')]);
+    if(!currentSession(version)||request!==state.overviewRequest)return;
     $('#metric-total').textContent = stats.total;
     $('#metric-active').textContent = stats.active;
     $('#metric-overdue').textContent = stats.overdue;
@@ -97,11 +107,11 @@ async function loadOverview() {
       .sort((a,b)=>(a.priority==='critical'?-1:1) - (b.priority==='critical'?-1:1)).slice(0,3);
     $('#priority-tickets').innerHTML = important.length ? important.map(t=>`<div class="priority-item ${esc(t.priority)}" tabindex="0" data-ticket="${Number(t.id)}" role="button" aria-label="Open ${esc(t.code)}"><span class="priority-icon">${t.priority==='critical'?'!':'↑'}</span><div><strong>${esc(t.title)}</strong><span>${esc(t.code)} · ${esc(human(t.priority))} priority · ${esc(dateText(t.due_at))}</span></div></div>`).join('') : '<p class="priority-empty">All urgent requests are resolved.</p>';
     $('#overview-ticket-rows').innerHTML = result.tickets.map(t=>rowMarkup(t,true)).join('') || '<tr><td colspan="5">No requests yet. Create a ticket to start.</td></tr>';
-  } catch(e) {toast('Could not refresh dashboard: '+e.message);}
+  } catch(e) {if(currentSession(version)&&request===state.overviewRequest)toast('Could not refresh dashboard: '+e.message);}
 }
 
 async function loadTickets() {
-  const request=++state.ticketRequest;
+  const version=state.sessionVersion, request=++state.ticketRequest;
   try {
     const q = $('#search-tickets').value.trim();
     const status=$('#filter-status').value, priority=$('#filter-priority').value;
@@ -110,7 +120,7 @@ async function loadTickets() {
     const exportQuery=query.toString();
     query.set('page',state.page);query.set('page_size','25');
     const result=await api('/api/tickets?'+query.toString());
-    if(request!==state.ticketRequest||!state.user)return;
+    if(request!==state.ticketRequest||!currentSession(version))return;
     if(state.page>result.pages){state.page=result.pages;return loadTickets();}
     state.pages=result.pages;
     state.tickets=result.tickets;
@@ -118,8 +128,9 @@ async function loadTickets() {
     $('#ticket-counter').textContent = `${result.total} request${result.total===1?'':'s'} · Page ${state.page} of ${state.pages}`;
     $('#previous-page').disabled=state.page<=1;$('#next-page').disabled=state.page>=state.pages;
     $('#export-button').href='/api/export.csv?'+exportQuery;
-    $('#nav-ticket-count').textContent=String((await api('/api/stats')).total);
-  } catch(e) {toast('Could not load tickets: '+e.message);}
+    const stats=await api('/api/stats');
+    if(request===state.ticketRequest&&currentSession(version))$('#nav-ticket-count').textContent=String(stats.total);
+  } catch(e) {if(currentSession(version)&&request===state.ticketRequest)toast('Could not load tickets: '+e.message);}
 }
 
 function activityMarkup(a) {
@@ -127,15 +138,19 @@ function activityMarkup(a) {
   return `<div class="activity-item"><span class="activity-bubble">${a.action==='created'?'＋':'↗'}</span><div><strong>${esc(a.actor)}</strong> <span>${esc(description)} on</span> <strong>${esc(a.code)}</strong><p>${esc(a.title)}</p><small>${esc(dateText(a.created_at))} · ${esc(a.detail)}</small></div></div>`;
 }
 async function loadActivity() {
+  const version=state.sessionVersion, request=++state.activityRequest;
   try {
     const d=await api('/api/activity');
+    if(!currentSession(version)||request!==state.activityRequest)return;
     $('#full-activity').innerHTML=d.items.map(activityMarkup).join('') || '<p>No activity yet.</p>';
-  } catch(e) {toast('Could not load audit history: '+e.message);}
+  } catch(e) {if(currentSession(version)&&request===state.activityRequest)toast('Could not load audit history: '+e.message);}
 }
 
 async function showTicket(id) {
+  const version=state.sessionVersion, request=++state.detailRequest;
   try {
     const d=await api('/api/tickets/'+Number(id));
+    if(!currentSession(version)||request!==state.detailRequest)return;
     state.selected=d.ticket;
     $('#detail-code').textContent=d.ticket.code;
     $('#detail-title').textContent=d.ticket.title;
@@ -156,7 +171,7 @@ async function showTicket(id) {
     $('#detail-comments').innerHTML=d.comments.length ? d.comments.map(c=>`<div class="comment"><strong>${esc(c.author)}</strong><small>${esc(dateText(c.created_at))}</small><p>${esc(c.body)}</p></div>`).join('') : '<p class="empty-comment">No notes yet. Add the first update.</p>';
     $('#detail-audit').innerHTML=d.audit.map(a=>`<div class="mini-event"><div><strong>${esc(a.actor)}</strong> · ${esc(a.detail)}<time>${esc(dateText(a.created_at))}</time></div></div>`).join('');
     if(!$('#detail-dialog').open)$('#detail-dialog').showModal();
-  } catch(e) {toast('Could not open ticket: '+e.message);}
+  } catch(e) {if(currentSession(version)&&request===state.detailRequest)toast('Could not open ticket: '+e.message);}
 }
 
 async function saveTicket() {
@@ -217,8 +232,9 @@ async function login(event) {
 }
 
 async function logout() {
-  try {await api('/api/logout',{method:'POST',body:{}});clearSession();}
-  catch(error) {toast('Sign out could not be confirmed. '+error.message);}
+  const version=state.sessionVersion;
+  try {await api('/api/logout',{method:'POST',body:{}});if(currentSession(version))clearSession();}
+  catch(error) {if(currentSession(version))toast('Sign out could not be confirmed. '+error.message);}
 }
 
 function ticketClick(event) {
@@ -271,3 +287,4 @@ async function startup() {
 }
 
 document.addEventListener('DOMContentLoaded',startup);
+
