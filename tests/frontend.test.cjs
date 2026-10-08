@@ -13,6 +13,8 @@ function loadFrontend() {
         value: '', textContent: '', innerHTML: '', disabled: false,
         classList: { toggle() {}, add() {}, remove() {} },
         parentElement: { classList: { toggle() {} } }, focus() {},
+        options: ['open', 'in_progress', 'resolved'].map(value => ({ value })),
+        open: false, showModal() { this.open = true; }, close() { this.open = false; },
       });
       return nodes.get(selector);
     },
@@ -57,3 +59,64 @@ test('network failure shows connection feedback', async () => {
   await assert.rejects(run(`api('/api/health')`), /local server is running/);
   assert.equal(nodes.get('#connection-status').textContent, 'Connection unavailable');
 });
+
+const adminSession = `{user:{id:1,name:'Demo administrator',role:'admin'},csrf:'old-token'}`;
+const agentSession = `{user:{id:2,name:'Demo agent',role:'agent'},csrf:'new-token'}`;
+const detail = id => `({ticket:{id:${id},code:'CP-000${id}',title:'Request ${id}',description:'Synthetic request',requester:'Demo',status:'open',priority:'low',category:'Other',assignee_id:null},comments:[],audit:[]})`;
+
+test('older detail responses cannot replace the last ticket opened', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); globalThis.pending=[]; api=async()=>new Promise(resolve=>pending.push(resolve));`);
+  const older = run('showTicket(1)');
+  const latest = run('showTicket(2)');
+  run(`pending[1](${detail(2)})`);
+  await latest;
+  run(`pending[0](${detail(1)})`);
+  await older;
+  assert.equal(nodes.get('#detail-title').textContent, 'Request 2');
+  assert.equal(run('state.selected.id'), 2);
+});
+
+test('detail from a previous sign-in is discarded after changing accounts', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); api=async()=>new Promise(resolve=>globalThis.finishDetail=resolve);`);
+  const pending = run('showTicket(1)');
+  run(`clearSession(); setAuthenticated(${agentSession});`);
+  run(`finishDetail(${detail(1)})`);
+  await pending;
+  assert.equal(run('state.selected'), null);
+  assert.notEqual(nodes.get('#detail-title')?.textContent, 'Request 1');
+  assert.notEqual(nodes.get('#detail-dialog')?.open, true);
+});
+
+test('a delayed 401 from the previous session cannot sign out the new account', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); fetch=async()=>new Promise(resolve=>globalThis.finishFetch=resolve);`);
+  const pending = run(`api('/api/tickets')`);
+  const rejected = assert.rejects(pending, /Old session expired/);
+  run(`clearSession(); setAuthenticated(${agentSession}); finishFetch({status:401,ok:false,json:async()=>({error:'Old session expired'})});`);
+  await rejected;
+  assert.equal(run('state.user.id'), 2);
+  assert.equal(run('state.csrf'), 'new-token');
+  assert.equal(nodes.get('#login-error').textContent, '');
+});
+
+test('a 401 from the current session still returns to sign-in', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); fetch=async()=>({status:401,ok:false,json:async()=>({error:'Session expired'})});`);
+  await assert.rejects(run(`api('/api/tickets')`), /Session expired/);
+  assert.equal(run('state.user'), null);
+  assert.equal(nodes.get('#login-error').textContent, 'Your session ended. Sign in again.');
+});
+
+test('dashboard results from a previous sign-in cannot populate the new account', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); globalThis.pending=[]; api=async()=>new Promise(resolve=>pending.push(resolve));`);
+  const pending = run('loadOverview()');
+  run(`clearSession(); setAuthenticated(${agentSession});
+    pending[0]({total:999,active:999,overdue:0,resolved:0,by_status:{open:999}});
+    pending[1]({tickets:[]}); pending[2]({tickets:[]});`);
+  await pending;
+  assert.notEqual(nodes.get('#metric-total')?.textContent, 999);
+});
+

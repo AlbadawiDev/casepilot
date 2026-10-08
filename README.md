@@ -18,7 +18,7 @@ CasePilot is designed as an interview-friendly demonstration of **full-stack dev
 - SQLite persistence and deterministic seed dataset
 - Responsive design, keyboard-accessible rows and reduced-motion support
 - CSRF checking for state-changing actions, salted PBKDF2 password hashes, restrictive response headers, no third-party resources
-- 22 HTTP integration tests, 4 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
+- 22 HTTP integration tests, 9 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
 - Windows background launcher, readiness checks, logs and a process-identity-checked stop command
 
 ## Quick start on Windows
@@ -58,7 +58,7 @@ node --test tests/frontend.test.cjs
 
 Run `.\scripts\check.ps1` for Python compilation, JavaScript syntax, frontend tests (if Node is installed) and the HTTP suite. Node is optional for running the app.
 
-The tests cover login/password validation, anonymous access, CSRF, ticket lifecycle, roles, notes, audit history, CSV filtering/formula protection, parameterized search, pagination, expiry, session rotation/capacity, login throttling, Host/Origin restrictions, database integrity and legacy password-hash migration. Frontend tests cover HTML escaping, overdue indicators, out-of-order search responses and network feedback. See [verification notes](docs/VERIFICATION.md) for actual local results and [security notes](SECURITY.md) for the boundary of this demo.
+The tests cover login/password validation, anonymous access, CSRF, ticket lifecycle, roles, notes, audit history, CSV filtering/formula protection, parameterized search, pagination, expiry, session rotation/capacity, login throttling, Host/Origin restrictions, database integrity and legacy password-hash migration. Frontend tests cover HTML escaping, overdue indicators, out-of-order search/detail responses, network feedback and responses that arrive after an account change. A delayed 401 from a previous sign-in cannot clear the new session. See [verification notes](docs/VERIFICATION.md) for actual local results and [security notes](SECURITY.md) for the boundary of this demo.
 
 ## Architecture
 
@@ -109,3 +109,4 @@ The project includes synthetic sample names and incidents only. It does not acce
 ## License
 
 MIT (see `LICENSE`). Attribution and portfolio presentation should match the actual work and tools involved. Review, run and understand the source before describing implementation decisions in an interview.
+

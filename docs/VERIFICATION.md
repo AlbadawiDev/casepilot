@@ -12,7 +12,15 @@ The original package had eight HTTP integration tests. An initial execution prod
 
 This compiles the Python source, checks JavaScript syntax, runs four frontend tests and runs 22 HTTP integration tests with ResourceWarnings treated as errors. These cover security, lifecycle, storage integrity, migration, pagination and UI behavior. Test databases are temporary and synthetic.
 
-GitHub Actions is configured for Python 3.11/3.14 on Windows/Linux. Only the local Windows/Python 3.14 execution has been verified in this audit. CI results should be checked after publication.
+GitHub Actions is configured for Python 3.11/3.14 on Windows/Linux. The [main run for commit `69f2b796`](https://github.com/AlbadawiDev/casepilot/actions/runs/37700806418) completed successfully after publication. The later frontend regression work below is validated separately.
+
+## Async-response regression checks — 2026-10-08
+
+Environment: Linux, Python 3.12.14 and Node 24.19.0. Four new tests first failed against the published frontend: an older ticket detail replaced the latest selection, old detail/dashboard responses repopulated the UI after changing accounts, and a delayed 401 from the previous session cleared the new session.
+
+The frontend now records which sign-in started each read and discards results from superseded sessions. Independent request counters protect ticket details, dashboards and activity lists against responses arriving out of order. Current-session 401 responses still return the user to sign-in.
+
+After the correction, **9 frontend tests and all 22 HTTP integration tests passed**, with ResourceWarnings treated as errors. JavaScript syntax and `git diff --check` also passed. Tests use controlled deferred promises to reproduce these races without timing sleeps. These are automated source-level regression checks; no new browser walkthrough is claimed for this change.
 
 ## Browser walkthrough
 
@@ -25,3 +33,4 @@ The starter was executed with `-NoBrowser`, and `/api/health` returned `status: 
 ## Remaining validation
 
 Docker CLI is installed, but the Docker daemon was not running; no container build/runtime result is claimed. The original screenshots and original silent MP4 remain in the project for provenance, but the MP4 predates these corrections. Review or re-record it before presenting the current version. This project's video is separate from the UDO thesis-system demonstration.
+
