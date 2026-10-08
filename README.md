@@ -18,7 +18,7 @@ CasePilot is designed as an interview-friendly demonstration of **full-stack dev
 - SQLite persistence and deterministic seed dataset
 - Responsive design, keyboard-accessible rows and reduced-motion support
 - CSRF checking for state-changing actions, salted PBKDF2 password hashes, restrictive response headers, no third-party resources
-- 22 HTTP integration tests, 9 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
+- 22 HTTP integration tests, 10 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
 - Windows background launcher, readiness checks, logs and a process-identity-checked stop command
 
 ## Quick start on Windows

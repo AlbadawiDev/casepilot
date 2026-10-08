@@ -120,3 +120,12 @@ test('dashboard results from a previous sign-in cannot populate the new account'
   assert.notEqual(nodes.get('#metric-total')?.textContent, 999);
 });
 
+test('a completed sign-out from the previous session cannot clear the new account', async () => {
+  const { run } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); api=async()=>new Promise(resolve=>globalThis.finishSignOut=resolve);`);
+  const pending = run('logout()');
+  run(`clearSession(); setAuthenticated(${agentSession}); finishSignOut({ok:true});`);
+  await pending;
+  assert.equal(run('state.user?.id'), 2);
+});
+

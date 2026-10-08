@@ -18,9 +18,9 @@ GitHub Actions is configured for Python 3.11/3.14 on Windows/Linux. The [main ru
 
 Environment: Linux, Python 3.12.14 and Node 24.19.0. Four new tests first failed against the published frontend: an older ticket detail replaced the latest selection, old detail/dashboard responses repopulated the UI after changing accounts, and a delayed 401 from the previous session cleared the new session.
 
-The frontend now records which sign-in started each read and discards results from superseded sessions. Independent request counters protect ticket details, dashboards and activity lists against responses arriving out of order. Current-session 401 responses still return the user to sign-in.
+The frontend now records which sign-in started each read and discards results from superseded sessions. Independent request counters protect ticket details, dashboards and activity lists against responses arriving out of order. A fifth failing regression revealed that a delayed logout response could also clear a newer sign-in; logout now uses the same session guard. Current-session 401 responses still return the user to sign-in.
 
-After the correction, **9 frontend tests and all 22 HTTP integration tests passed**, with ResourceWarnings treated as errors. JavaScript syntax and `git diff --check` also passed. Tests use controlled deferred promises to reproduce these races without timing sleeps. These are automated source-level regression checks; no new browser walkthrough is claimed for this change.
+After the correction, **10 frontend tests and all 22 HTTP integration tests passed**, with ResourceWarnings treated as errors. JavaScript syntax and `git diff --check` also passed. Tests use controlled deferred promises to reproduce these races without timing sleeps. These are automated source-level regression checks; no new browser walkthrough is claimed for this change.
 
 ## Browser walkthrough
 

@@ -232,8 +232,9 @@ async function login(event) {
 }
 
 async function logout() {
-  try {await api('/api/logout',{method:'POST',body:{}});clearSession();}
-  catch(error) {toast('Sign out could not be confirmed. '+error.message);}
+  const version=state.sessionVersion;
+  try {await api('/api/logout',{method:'POST',body:{}});if(currentSession(version))clearSession();}
+  catch(error) {if(currentSession(version))toast('Sign out could not be confirmed. '+error.message);}
 }
 
 function ticketClick(event) {
