@@ -18,3 +18,11 @@
 :focus-visible{outline:3px solid #416cf0;outline-offset:3px}
 .metric-note,.panel-header p,.ticket-cell small,th{color:#64748b}
 @media(max-width:560px){.table-foot .pagination{display:flex}.table-foot .pagination .btn{padding:9px 12px}.topbar-left{min-width:0}}
+
+/* Bounded CSV preview keeps row errors visible before an atomic import. */
+.import-modal{width:min(850px,calc(100vw - 28px))}.import-modal code{overflow-wrap:anywhere}
+.import-errors{color:#ad3243;font-size:12px;line-height:1.7;padding-left:20px}
+.import-table{min-width:570px}.import-table caption{text-align:left;font-size:12px;font-weight:700;padding:10px 0}
+.import-table td{white-space:normal;overflow-wrap:anywhere;max-width:250px;vertical-align:top}
+#import-csv{font-family:ui-monospace,monospace;white-space:pre}
+@media(max-width:560px){.heading-actions{flex-wrap:wrap}.import-modal .modal-footer{flex-wrap:wrap}}

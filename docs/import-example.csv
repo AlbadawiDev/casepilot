@@ -1,0 +1,3 @@
+title,description,category,priority,requester
+Synthetic laptop setup,Install standard tools on the demo laptop,Hardware,medium,Demo Requester
+Synthetic VPN timeout,Investigate the demo connection timeout,Network,high,Sample Teammate
