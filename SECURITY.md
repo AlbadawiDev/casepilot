@@ -12,6 +12,7 @@ CasePilot is a local portfolio demonstration using synthetic data. It is designe
 - Parameterized SQLite queries, validation of enumerations, field lengths, user IDs and ticket transitions, foreign keys and transactional update/audit writes.
 - Only administrators can change assignment. Both roles can view all tickets, create requests, update status/priority and add notes. This is a shared internal workspace, with no tenant isolation.
 - Dynamic browser content is escaped. CSV cells beginning with spreadsheet formula markers are prefixed to prevent formula interpretation.
+- CSV preview/import require administrator authorization and the session CSRF token. Input is bounded to 50 rows and 24 KiB of CSV within the 32 KiB JSON request limit. The commit revalidates every row and checks the preview hash. Tickets, audit events and the persistent batch receipt are committed together under a SQLite write lock; concurrent retries return the existing receipt. The content hash is an idempotence key, not a secret or an authorization token.
 - CSP, no-store caching, frame blocking, MIME sniffing prevention and no third-party scripts, fonts or API calls.
 - Database files, environment files, runtime logs and local process state are excluded from Git and container context.
 

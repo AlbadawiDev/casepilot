@@ -34,3 +34,33 @@ The starter was executed with `-NoBrowser`, and `/api/health` returned `status: 
 
 Docker CLI is installed, but the Docker daemon was not running; no container build/runtime result is claimed. The original screenshots and original silent MP4 remain in the project for provenance, but the MP4 predates these corrections. Review or re-record it before presenting the current version. This project's video is separate from the UDO thesis-system demonstration.
 
+
+## CSV import extension — 2026-10-12
+
+Environment: Linux, Python 3.12.14, Node 24.19.0. This extension was developed with coding-assistant support for the local portfolio demo. It does not use customer or university data.
+
+Executed locally:
+
+```bash
+CASEPILOT_QUIET=1 python -W error::ResourceWarning -m unittest discover -s tests -v
+node --check static/app.js
+node --test tests/frontend.test.cjs
+python -m py_compile main.py
+git diff --check
+```
+
+Results: **29 HTTP integration tests passed in 31.512 seconds**, including seven new import tests. **15 frontend tests passed** with no failures. Python compilation, JavaScript syntax and the diff whitespace check passed.
+
+The import regression tests verify:
+
+- Anonymous users and support agents cannot preview or commit imports; administrator requests still require CSRF.
+- A batch with multiple invalid fields returns line-specific feedback and creates no tickets.
+- Quoted commas/newlines and a UTF-8 BOM are accepted. Imported spreadsheet formula cells remain protected in CSV exports.
+- Each imported ticket starts open/unassigned and records the authenticated administrator in its audit history.
+- A forced database error on the second ticket rolls back tickets, audit events and the batch receipt. A subsequent retry succeeds.
+- Two concurrent commits produce one batch and return the same ticket IDs.
+- The batch receipt survives a server restart. Header reordering, BOM and line-ending changes do not create duplicate tickets.
+- Invalid headers/quotes/nulls/Unicode, a changed preview, extra fields, more than 50 rows and oversized CSV are rejected.
+- Browser-source tests verify escaped preview markup, stale preview/account isolation, unchanged-preview/admin checks and preservation of the hash after a failed network request.
+
+The Playwright JavaScript library is present, but this runtime has no browser binary. The standard Chromium download returned zero-byte/truncated archives and was stopped. Therefore this extension has **no new browser walkthrough, desktop/mobile layout verification or verified UI screenshot**. The older screenshots and walkthrough above describe the earlier app version. Windows launchers, Docker runtime and remote CI were not rerun for this local extension.

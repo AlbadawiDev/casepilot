@@ -1,6 +1,10 @@
 """Black-box HTTP integration tests for core CasePilot workflows."""
 from pathlib import Path
 import json
+import csv
+import io
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import threading
 import time
@@ -289,6 +293,140 @@ class CasePilotTests(unittest.TestCase):
             db.execute('UPDATE users SET salt=?,password_hash=? WHERE username=?',(salt,digest,'admin'))
         self.assertEqual(self.request('/api/login','POST',{'username':'admin','password':password.strip()})[0],401)
         self.assertEqual(self.request('/api/login','POST',{'username':'admin','password':password})[0],200)
+
+
+    @staticmethod
+    def import_csv(rows=None, fields=None):
+        fields=fields or ['title','description','category','priority','requester']
+        rows=rows or [dict(title='Synthetic remote access',description='Investigate a demo network timeout',
+                          category='Network',priority='high',requester='Demo Requester')]
+        stream=io.StringIO(newline='')
+        writer=csv.DictWriter(stream,fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+        return stream.getvalue()
+
+    def test_csv_import_requires_admin_and_csrf_at_both_steps(self):
+        text=self.import_csv()
+        for route in ('preview','commit'):
+            data={'csv_text':text}
+            if route=='commit':data['content_hash']='0'*64
+            self.assertEqual(self.request('/api/import/'+route,'POST',data)[0],401)
+        self.login('agent')
+        self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':text})[0],403)
+        self.assertEqual(self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':'0'*64})[0],403)
+        self.login()
+        self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':text},csrf=False)[0],403)
+        self.assertEqual(self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':'0'*64},csrf=False)[0],403)
+
+    def test_csv_preview_reports_every_invalid_row_without_writes(self):
+        self.login()
+        good=dict(title='Synthetic access issue',description='A synthetic request for a local test',category='Access',priority='low',requester='Demo')
+        text=self.import_csv([good,dict(good,title='x',priority='urgent'),dict(good,requester='')])
+        code,preview,_=self.request('/api/import/preview','POST',{'csv_text':text})
+        self.assertEqual(code,200)
+        self.assertFalse(preview['can_commit'])
+        self.assertEqual({(e['row'],e['field']) for e in preview['errors']},{(3,'title'),(3,'priority'),(4,'requester')})
+        self.assertIsNone(preview['content_hash'])
+        self.assertEqual(self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':'0'*64})[0],400)
+        self.assertEqual(self.request('/api/stats')[1]['total'],9)
+
+    def test_csv_import_preserves_quoted_text_and_safe_exports_with_audit(self):
+        self.login()
+        row=dict(title='=HYPERLINK("https://example.test")',description='First line\nSecond line, with comma',category='Software',priority='medium',requester='@SUM(1,2)')
+        text='\ufeff'+self.import_csv([row])
+        code,preview,_=self.request('/api/import/preview','POST',{'csv_text':text})
+        self.assertEqual(code,200)
+        self.assertTrue(preview['can_commit'])
+        code,receipt,_=self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':preview['content_hash']})
+        self.assertEqual(code,201)
+        self.assertFalse(receipt['duplicate'])
+        full=self.request('/api/tickets/'+str(receipt['ticket_ids'][0]))[1]
+        self.assertEqual(full['ticket']['description'],row['description'])
+        self.assertEqual(full['ticket']['status'],'open')
+        self.assertIsNone(full['ticket']['assignee_id'])
+        self.assertEqual({event['action'] for event in full['audit']},{'created','imported'})
+        self.assertTrue(all(event['actor']=='Morgan Lee' for event in full['audit']))
+        raw=self.request('/api/export.csv',as_json=False)[1]
+        exported=list(csv.DictReader(io.StringIO(raw.decode('utf-8-sig'))))
+        ticket=next(r for r in exported if r['code']==full['ticket']['code'])
+        self.assertEqual(ticket['title'],"'"+row['title'])
+        self.assertEqual(ticket['requester'],"'"+row['requester'])
+
+    def test_csv_import_retries_are_persistent_and_format_independent(self):
+        self.login()
+        text=self.import_csv()
+        preview=self.request('/api/import/preview','POST',{'csv_text':text})[1]
+        first=self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':preview['content_hash']})[1]
+        path=self.server.db_path
+        self.server.shutdown();self.server.server_close();self.thread.join(timeout=3)
+        self.server=create_server(path,port=0)
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True)
+        self.thread.start()
+        self.base=f'http://127.0.0.1:{self.server.server_address[1]}'
+        self.cookie='';self.csrf='';self.login()
+        reordered='\ufeff'+self.import_csv(fields=['requester','priority','category','description','title']).replace('\r\n','\n')
+        again=self.request('/api/import/preview','POST',{'csv_text':reordered})[1]
+        self.assertEqual(again['content_hash'],preview['content_hash'])
+        self.assertTrue(again['already_imported'])
+        self.assertFalse(again['can_commit'])
+        code,retry,_=self.request('/api/import/commit','POST',{'csv_text':reordered,'content_hash':preview['content_hash']})
+        self.assertEqual(code,200)
+        self.assertTrue(retry['duplicate'])
+        self.assertEqual(retry['ticket_ids'],first['ticket_ids'])
+        self.assertEqual(self.request('/api/stats')[1]['total'],10)
+
+    def test_csv_import_rejects_changed_preview_malformed_csv_and_bounds(self):
+        self.login()
+        text=self.import_csv()
+        preview=self.request('/api/import/preview','POST',{'csv_text':text})[1]
+        changed=text.replace('high','low')
+        for digest in (preview['content_hash'],'not-a-hash','\ud800'):
+            self.assertEqual(self.request('/api/import/commit','POST',{'csv_text':changed,'content_hash':digest})[0],409)
+        invalid=['title,title,category,priority,requester\na,b,c,d,e',
+                 'title,description,category,priority,requester\n"unclosed',
+                 'title,description,category,priority,requester\n',text+'\x00','\ud800']
+        for bad in invalid:
+            self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':bad})[0],400)
+        short='title,description,category,priority,requester\nvalid title,description,Other,low,Demo\n'
+        fifty=short.splitlines()[0]+'\n'+(short.splitlines()[1]+'\n')*50
+        self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':fifty})[0],200)
+        self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':fifty+short.splitlines()[1]+'\n'})[0],413)
+        self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':'x'*24577})[0],413)
+        self.assertEqual(self.request('/api/import/preview','POST',{'csv_text':text,'status':'resolved'})[0],400)
+        self.assertEqual(self.request('/api/stats')[1]['total'],9)
+
+    def test_csv_import_rolls_back_tickets_audit_and_receipt_on_database_error(self):
+        import main
+        self.login()
+        row=dict(title='Synthetic request one',description='Synthetic request for transaction testing',category='Other',priority='low',requester='Demo')
+        text=self.import_csv([row,dict(row,title='Synthetic request two')])
+        preview=self.request('/api/import/preview','POST',{'csv_text':text})[1]
+        original=main._create_ticket
+        calls=0
+        def fail_second(*args,**kwargs):
+            nonlocal calls
+            calls+=1
+            if calls==2:raise sqlite3.OperationalError('Synthetic write failure')
+            return original(*args,**kwargs)
+        with patch('main._create_ticket',side_effect=fail_second):
+            self.assertEqual(self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':preview['content_hash']})[0],500)
+        with connect(self.server.db_path) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM tickets').fetchone()[0],9)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM audit_events').fetchone()[0],9)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM ticket_imports').fetchone()[0],0)
+        self.assertEqual(self.request('/api/import/commit','POST',{'csv_text':text,'content_hash':preview['content_hash']})[0],201)
+
+    def test_concurrent_csv_commit_retries_create_one_batch(self):
+        self.login()
+        text=self.import_csv()
+        preview=self.request('/api/import/preview','POST',{'csv_text':text})[1]
+        data={'csv_text':text,'content_hash':preview['content_hash']}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses=list(pool.map(lambda _:self.request('/api/import/commit','POST',data),range(2)))
+        self.assertEqual(sorted(item[0] for item in responses),[200,201])
+        self.assertEqual(responses[0][1]['ticket_ids'],responses[1][1]['ticket_ids'])
+        self.assertEqual(self.request('/api/stats')[1]['total'],10)
 
 
 if __name__ == "__main__":

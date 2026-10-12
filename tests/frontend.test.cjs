@@ -129,3 +129,61 @@ test('a completed sign-out from the previous session cannot clear the new accoun
   assert.equal(run('state.user?.id'), 2);
 });
 
+test('CSV preview escapes both imported values and validation feedback', () => {
+  const { run, nodes } = loadFrontend();
+  run(`renderImportPreview({row_count:1,already_imported:false,errors:[{row:2,field:'<img>',message:'"<script>alert(1)</script>'}],rows:[{row:2,title:'<svg onload=alert(1)>',category:'<b>Other</b>',priority:'high',requester:'<img src=x>'}]})`);
+  const html=nodes.get('#import-preview').innerHTML;
+  assert.match(html,/&lt;svg/);
+  assert.match(html,/&quot;&lt;script&gt;/);
+  assert.doesNotMatch(html,/<script|<img|<svg|<b>/);
+});
+
+test('editing CSV while preview is pending discards the old confirmation', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); $('#import-csv').value='old input'; api=async()=>new Promise(resolve=>globalThis.finishPreview=resolve);`);
+  const pending=run('previewImport({preventDefault(){}})');
+  run(`$('#import-csv').value='new input'; invalidateImport(); finishPreview({can_commit:true,content_hash:'old-hash',row_count:1,errors:[],rows:[]});`);
+  await pending;
+  assert.equal(run('state.importPreview'),null);
+  assert.equal(nodes.get('#import-commit').disabled,true);
+  assert.equal(nodes.get('#import-preview').innerHTML,'');
+});
+
+test('CSV preview from a previous sign-in cannot arm import for another account', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); $('#import-csv').value='old input'; api=async()=>new Promise(resolve=>globalThis.finishPreview=resolve);`);
+  const pending=run('previewImport({preventDefault(){}})');
+  run(`clearSession(); setAuthenticated(${agentSession}); finishPreview({can_commit:true,content_hash:'old-hash',row_count:1,errors:[],rows:[]});`);
+  await pending;
+  assert.equal(run('state.importPreview'),null);
+  assert.equal(nodes.get('#import-commit').disabled,true);
+});
+
+test('import requires an unchanged confirmed preview and administrator role', async () => {
+  const { run } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); globalThis.calls=0; api=async()=>{calls++;return {}};`);
+  await run('commitImport()');
+  run(`state.importPreview={text:'confirmed input',hash:'hash'}; $('#import-csv').value='changed input';`);
+  await run('commitImport()');
+  run(`$('#import-csv').value='confirmed input'; state.user.role='agent';`);
+  await run('commitImport()');
+  assert.equal(run('calls'),0);
+});
+
+test('a failed import retains the same batch hash for a safe duplicate retry', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); $('#import-csv').value='confirmed input';
+    state.importPreview={text:'confirmed input',hash:'stable-hash'}; globalThis.calls=[]; setView=()=>{};
+    api=async(path,options)=>{calls.push(options.body);if(calls.length===1)throw new Error('Connection interrupted');return {duplicate:true,imported_count:2}};`);
+  await run('commitImport()');
+  assert.equal(run('state.importBusy'),false);
+  assert.equal(nodes.get('#import-commit').disabled,false);
+  assert.match(nodes.get('#import-error').textContent,/retry this batch safely/);
+  await run('commitImport()');
+  assert.equal(run('calls.length'),2);
+  assert.equal(run('calls[0].content_hash'),run('calls[1].content_hash'));
+  assert.equal(run('calls[0].csv_text'),run('calls[1].csv_text'));
+  assert.equal(run('state.importPreview'),null);
+  assert.match(nodes.get('#toast').textContent,/already imported/);
+});
+

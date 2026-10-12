@@ -15,10 +15,11 @@ CasePilot is designed as an interview-friendly demonstration of **full-stack dev
 - Administrative assignment, change tracking and internal notes
 - Immutable activity events for every ticket action (app workflow does not offer edits or deletes)
 - CSV exports filtered to the current ticket list
+- Administrator CSV import with row-by-row preview, validation, atomic writes and duplicate-retry protection
 - SQLite persistence and deterministic seed dataset
 - Responsive design, keyboard-accessible rows and reduced-motion support
 - CSRF checking for state-changing actions, salted PBKDF2 password hashes, restrictive response headers, no third-party resources
-- 22 HTTP integration tests, 10 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
+- 29 HTTP integration tests, 15 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
 - Windows background launcher, readiness checks, logs and a process-identity-checked stop command
 
 ## Quick start on Windows
@@ -58,7 +59,15 @@ node --test tests/frontend.test.cjs
 
 Run `.\scripts\check.ps1` for Python compilation, JavaScript syntax, frontend tests (if Node is installed) and the HTTP suite. Node is optional for running the app.
 
-The tests cover login/password validation, anonymous access, CSRF, ticket lifecycle, roles, notes, audit history, CSV filtering/formula protection, parameterized search, pagination, expiry, session rotation/capacity, login throttling, Host/Origin restrictions, database integrity and legacy password-hash migration. Frontend tests cover HTML escaping, overdue indicators, out-of-order search/detail responses, network feedback and responses that arrive after an account change. A delayed 401 from a previous sign-in cannot clear the new session. See [verification notes](docs/VERIFICATION.md) for actual local results and [security notes](SECURITY.md) for the boundary of this demo.
+The tests cover login/password validation, anonymous access, CSRF, ticket lifecycle, roles, notes, audit history, CSV filtering/formula protection, parameterized search, pagination, expiry, session rotation/capacity, login throttling, Host/Origin restrictions, database integrity and legacy password-hash migration. Import tests exercise a forced second-write failure, concurrent retries and a server restart. Frontend tests cover HTML escaping, overdue indicators, out-of-order search/detail responses, stale CSV previews, safe import retries, network feedback and responses that arrive after an account change. A delayed 401 from a previous sign-in cannot clear the new session. See [verification notes](docs/VERIFICATION.md) for actual local results and [security notes](SECURITY.md) for the boundary of this demo.
+
+## Import a synthetic ticket batch
+
+Sign in as administrator, open **All tickets → Import CSV**, paste CSV text or choose [the synthetic example](docs/import-example.csv), and select **Preview CSV**. Correct every reported line before selecting **Import tickets**. Support agents cannot preview or import batches.
+
+The CSV header contains `title,description,category,priority,requester` exactly once each, in any order. Quote cells containing commas or newlines. The same text-length/category/priority rules as manual ticket creation apply. There is a limit of 50 rows and 24 KiB of UTF-8 CSV, within the existing 32 KiB JSON request limit. Split a heavily escaped file into smaller batches if its JSON request exceeds that limit.
+
+Preview never creates tickets. Import creates all validated tickets as open and unassigned in one SQLite transaction, records an audit event for each, and stores a batch receipt. An invalid row or a database failure leaves the whole batch unapplied. A changed preview is rejected. Re-sending an identical normalized batch returns its existing ticket IDs, even after restarting the server. BOM, line endings, header order and surrounding cell spaces do not create a new batch. This prevents retry duplicates; it does not deduplicate tickets across different batches. CSV exports have additional reporting columns and are not this import format.
 
 ## Architecture
 
@@ -72,7 +81,7 @@ Python HTTP server (main.py)
   | search, stats, export and audit routes
           |
           v
-SQLite (users, tickets, comments, audit_events)
+SQLite (users, tickets, comments, audit_events, ticket_imports)
 ```
 
 The code intentionally has a small deployment footprint so reviewers can start it quickly. `main.py` uses only Python's standard library.
@@ -90,6 +99,8 @@ The code intentionally has a small deployment footprint so reviewers can start i
 | GET | `/api/users` | Assigned staff |
 | GET | `/api/tickets` | Search/filter, `page`, `page_size` (1–100); returns `total`, `pages` |
 | POST | `/api/tickets` | Create ticket |
+| POST | `/api/import/preview` | Admin + CSRF: validate `csv_text` and return rows/errors/content hash |
+| POST | `/api/import/commit` | Admin + CSRF: atomically import `csv_text` matching `content_hash`; retries return the existing receipt |
 | GET | `/api/tickets/:id` | Detail + comments + audit |
 | PATCH | `/api/tickets/:id` | Change status / priority / assignee |
 | POST | `/api/tickets/:id/comments` | Internal note |
@@ -109,4 +120,6 @@ The project includes synthetic sample names and incidents only. It does not acce
 ## License
 
 MIT (see `LICENSE`). Attribution and portfolio presentation should match the actual work and tools involved. Review, run and understand the source before describing implementation decisions in an interview.
+
+The 2026-10-12 CSV extension was developed with coding-assistant support as a portfolio enhancement. It is a demonstration feature, not evidence of employment or a client deployment. The implementation and verification notes are available for review.
 

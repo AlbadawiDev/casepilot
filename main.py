@@ -31,6 +31,9 @@ PRIORITIES = ("low", "medium", "high", "critical")
 STATUSES = ("open", "in_progress", "resolved")
 CATEGORIES = ("Access", "Software", "Hardware", "Network", "Billing", "Other")
 MAX_BODY = 32_768
+MAX_IMPORT_BYTES = 24_576
+MAX_IMPORT_ROWS = 50
+IMPORT_FIELDS = ("title", "description", "category", "priority", "requester")
 PASSWORD_ITERATIONS = 600_000
 LOGIN_WINDOW = 60
 LOGIN_LIMIT = 8
@@ -104,6 +107,11 @@ def init_db(db_path: Path) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_comments_ticket ON comments(ticket_id);
         CREATE INDEX IF NOT EXISTS idx_audit_ticket ON audit_events(ticket_id);
+        CREATE TABLE IF NOT EXISTS ticket_imports (
+          content_hash TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id),
+          ticket_ids TEXT NOT NULL, created_at TEXT NOT NULL
+        );
         """)
         # Existing ZIP-version databases used 180,000 iterations. Keep them
         # readable and upgrade each hash after a successful login.
@@ -168,6 +176,63 @@ def required_text(data: dict, key: str, *, max_len: int, min_len: int = 1) -> st
     if not min_len <= len(value) <= max_len:
         raise APIError(400, f"{key} must contain {min_len} to {max_len} characters")
     return value
+
+
+def preview_ticket_csv(text: str) -> dict:
+    """Parse and validate a bounded batch without writing any database rows."""
+    if not isinstance(text, str):
+        raise APIError(400, "csv_text must be text")
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise APIError(400, "CSV must contain valid UTF-8 text")
+    if not text.strip() or size > MAX_IMPORT_BYTES:
+        raise APIError(413, "CSV must contain 1 to 24576 UTF-8 bytes")
+    if "\x00" in text:
+        raise APIError(400, "CSV cannot contain null characters")
+    rows, errors = [], []
+    reader = csv.reader(io.StringIO(text.lstrip("\ufeff"), newline=""), strict=True)
+    try:
+        header = next(reader)
+        if len(header) != len(IMPORT_FIELDS) or set(header) != set(IMPORT_FIELDS):
+            raise APIError(400, "CSV header must contain title,description,category,priority,requester exactly once")
+        count = 0
+        for values in reader:
+            # Empty lines are ignored by csv.reader; a row of empty cells is an error.
+            if not values:
+                continue
+            count += 1
+            if count > MAX_IMPORT_ROWS:
+                raise APIError(413, "CSV imports are limited to 50 tickets")
+            line = reader.line_num
+            if len(values) != len(header):
+                errors.append({"row": line, "field": "row", "message": "Expected exactly five cells"})
+                continue
+            record = dict(zip(header, values))
+            normalized = {}
+            for key, minimum, maximum in (("title", 5, 110), ("description", 8, 2000), ("requester", 2, 100)):
+                try:
+                    normalized[key] = required_text(record, key, min_len=minimum, max_len=maximum)
+                except APIError as exc:
+                    errors.append({"row": line, "field": key, "message": exc.message})
+            for key, allowed in (("category", CATEGORIES), ("priority", PRIORITIES)):
+                normalized[key] = record[key].strip()
+                if normalized[key] not in allowed:
+                    errors.append({"row": line, "field": key, "message": "Choose one of: " + ", ".join(allowed)})
+            rows.append({"row": line, **normalized})
+    except (csv.Error, StopIteration):
+        raise APIError(400, "Malformed CSV: check quotes and the header")
+    if not rows and not errors:
+        raise APIError(400, "CSV must contain at least one ticket row")
+    # Canonical validated data makes identical re-pastes (BOM, CRLF, header
+    # order or surrounding spaces) idempotent without storing the raw file.
+    digest = None
+    if not errors:
+        canonical = [{key: row[key] for key in IMPORT_FIELDS} for row in rows]
+        digest = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True,
+                                            separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {"rows": rows, "errors": errors, "row_count": count, "content_hash": digest,
+            "can_commit": not errors}
 
 
 class DeskServer(ThreadingHTTPServer):
@@ -410,6 +475,44 @@ class DeskHandler(BaseHTTPRequestHandler):
             return self.respond(200, {"ok": True}, extra={"Set-Cookie": self.cookie("", 0)})
 
         session = self.authorize(modify=method in ("POST", "PATCH"))
+        if method == "POST" and route in ("/api/import/preview", "/api/import/commit"):
+            self.authorize(admin=True)
+            data = self.read_json()
+            expected = {"csv_text"} if route.endswith("preview") else {"csv_text", "content_hash"}
+            if set(data) != expected:
+                raise APIError(400, "Invalid import fields")
+            preview = preview_ticket_csv(data["csv_text"])
+            if route.endswith("preview"):
+                with connect(self.server.db_path) as db:
+                    prior = db.execute("SELECT ticket_ids FROM ticket_imports WHERE content_hash=?",
+                                       (preview["content_hash"],)).fetchone()
+                return self.respond(200, {**preview, "already_imported": bool(prior),
+                                          "can_commit": preview["can_commit"] and not prior})
+            if preview["errors"]:
+                raise APIError(400, "CSV has validation errors. Preview and correct every row before importing.")
+            content_hash = data["content_hash"]
+            if not isinstance(content_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", content_hash) or not hmac.compare_digest(content_hash, preview["content_hash"]):
+                raise APIError(409, "CSV changed since preview. Preview it again before importing.")
+            with connect(self.server.db_path) as db:
+                # Lock before checking the batch receipt. Concurrent retries
+                # cannot both create tickets, and exceptions roll back all rows.
+                db.execute("BEGIN IMMEDIATE")
+                prior = db.execute("SELECT ticket_ids FROM ticket_imports WHERE content_hash=?", (content_hash,)).fetchone()
+                if prior:
+                    identifiers = json.loads(prior["ticket_ids"])
+                else:
+                    identifiers = []
+                    for row in preview["rows"]:
+                        ident = _create_ticket(db, row["title"], row["description"], row["category"],
+                                               row["priority"], row["requester"], None,
+                                               creator=session["user"]["id"])
+                        identifiers.append(ident)
+                        db.execute("INSERT INTO audit_events (ticket_id,user_id,action,detail,created_at) VALUES (?,?,?,?,?)",
+                                   (ident, session["user"]["id"], "imported", "CSV batch " + content_hash[:12], utc_now()))
+                    db.execute("INSERT INTO ticket_imports (content_hash,user_id,ticket_ids,created_at) VALUES (?,?,?,?)",
+                               (content_hash, session["user"]["id"], json.dumps(identifiers), utc_now()))
+            return self.respond(200 if prior else 201, {"ticket_ids": identifiers, "imported_count": len(identifiers),
+                                                        "duplicate": bool(prior), "content_hash": content_hash})
         if method == "GET" and route == "/api/users":
             with connect(self.server.db_path) as db:
                 users = [dict(r) for r in db.execute("SELECT id,display_name AS name,role FROM users ORDER BY display_name")]

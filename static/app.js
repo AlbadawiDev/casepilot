@@ -5,7 +5,7 @@ const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (m
 const human = (value) => ({open:'Open', in_progress:'In progress', resolved:'Resolved', low:'Low', medium:'Medium', high:'High', critical:'Critical'}[value] || String(value));
 const dateText = (str) => str ? new Date(str).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '—';
 const initials = (str) => String(str || '—').split(/\s+/).slice(0, 2).map((s)=>s[0]||'').join('').toUpperCase();
-const state = {user:null, csrf:'', users:[], view:'overview', tickets:[], selected:null, toastTimer:null, searchTimer:null, page:1, pages:1, sessionVersion:0, ticketRequest:0, overviewRequest:0, activityRequest:0, detailRequest:0};
+const state = {user:null, csrf:'', users:[], view:'overview', tickets:[], selected:null, toastTimer:null, searchTimer:null, page:1, pages:1, sessionVersion:0, ticketRequest:0, overviewRequest:0, activityRequest:0, detailRequest:0, importPreview:null, importRevision:0, importRequest:0, importBusy:false};
 
 // A response belongs to the sign-in that started it, even when another account
 // has since signed in. Request counters also prevent older reads winning races.
@@ -21,6 +21,7 @@ function clearSession(message='') {
   state.sessionVersion++;
   document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
   state.user=null;state.csrf='';state.selected=null;state.users=[];state.tickets=[];
+  resetImport();
   $('#app-shell').classList.add('hidden');$('#login-screen').classList.remove('hidden');
   $('#password').value='';$('#login-error').textContent=message;$('#username').focus();
 }
@@ -51,6 +52,8 @@ function setAuthenticated(data) {
   state.sessionVersion++;
   state.selected=null; state.users=[]; state.tickets=[]; state.page=1; state.pages=1;
   state.user = data.user; state.csrf = data.csrf;
+  resetImport();
+  $('#import-tickets').classList.toggle('hidden',state.user.role!=='admin');
   $('#login-screen').classList.add('hidden'); $('#app-shell').classList.remove('hidden');
   for (const id of ['sidebar-avatar','top-avatar']) $("#"+id).textContent = initials(state.user.name);
   $('#sidebar-name').textContent = state.user.name;
@@ -134,7 +137,7 @@ async function loadTickets() {
 }
 
 function activityMarkup(a) {
-  const description = ({created:'created a new request',updated_status:'updated a ticket status',updated_priority:'changed a priority',updated_assignee_id:'updated the assignee',commented:'added an internal note'})[a.action] || 'updated a request';
+  const description = ({created:'created a new request',imported:'imported a request from CSV',updated_status:'updated a ticket status',updated_priority:'changed a priority',updated_assignee_id:'updated the assignee',commented:'added an internal note'})[a.action] || 'updated a request';
   return `<div class="activity-item"><span class="activity-bubble">${a.action==='created'?'＋':'↗'}</span><div><strong>${esc(a.actor)}</strong> <span>${esc(description)} on</span> <strong>${esc(a.code)}</strong><p>${esc(a.title)}</p><small>${esc(dateText(a.created_at))} · ${esc(a.detail)}</small></div></div>`;
 }
 async function loadActivity() {
@@ -219,6 +222,79 @@ async function createTicket(event) {
   finally {button.disabled=false;}
 }
 
+function invalidateImport() {
+  state.importRevision++;
+  state.importPreview=null;
+  $('#import-commit').disabled=true;
+  $('#import-preview').innerHTML='';
+  $('#import-error').textContent='';
+}
+
+function resetImport() {
+  invalidateImport();
+  state.importBusy=false;
+  $('#import-csv').value='';$('#import-file').value='';
+  $('#import-csv').readOnly=false;$('#import-file').disabled=false;
+  $('#import-preview-button').disabled=false;
+}
+
+function renderImportPreview(result) {
+  const errors=result.errors.map(error=>`<li>Line ${Number(error.row)}, ${esc(error.field)}: ${esc(error.message)}</li>`).join('');
+  const rows=result.rows.map(row=>`<tr><td>${Number(row.row)}</td><td>${esc(row.title||'')}</td><td>${esc(row.category)}</td><td>${esc(row.priority)}</td><td>${esc(row.requester||'')}</td></tr>`).join('');
+  const summary=result.already_imported?'This batch was already imported. No additional tickets will be created.':result.errors.length?`${result.errors.length} validation error(s). Correct every error and preview again.`:`${result.row_count} ticket(s) ready. Importing creates all tickets together.`;
+  $('#import-preview').innerHTML=`<p class="workflow-hint">${esc(summary)}</p>${errors?'<ul class="import-errors">'+errors+'</ul>':''}<div class="table-wrap"><table class="import-table"><caption>CSV preview</caption><thead><tr><th>LINE</th><th>TITLE</th><th>CATEGORY</th><th>PRIORITY</th><th>REQUESTER</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+async function loadImportFile(event) {
+  invalidateImport();
+  const file=event.target.files[0], version=state.sessionVersion, revision=state.importRevision;
+  if(!file)return;
+  if(file.size>24576){$('#import-error').textContent='Choose a UTF-8 CSV file of 24 KiB or less.';return;}
+  try {
+    const text=await file.text();
+    if(!currentSession(version)||revision!==state.importRevision)return;
+    $('#import-csv').value=text;
+  } catch(_) {if(currentSession(version)&&revision===state.importRevision)$('#import-error').textContent='Could not read the file. Paste the CSV text instead.';}
+}
+
+async function previewImport(event) {
+  event.preventDefault();
+  if(state.user?.role!=='admin'||state.importBusy)return;
+  invalidateImport();
+  const version=state.sessionVersion, revision=state.importRevision, request=++state.importRequest;
+  const text=$('#import-csv').value, button=$('#import-preview-button');button.disabled=true;
+  try {
+    const result=await api('/api/import/preview',{method:'POST',body:{csv_text:text}});
+    if(!currentSession(version)||revision!==state.importRevision||request!==state.importRequest)return;
+    state.importPreview=result.can_commit?{text,hash:result.content_hash}:null;
+    renderImportPreview(result);
+    $('#import-commit').disabled=!result.can_commit;
+  } catch(error) {if(currentSession(version)&&revision===state.importRevision&&request===state.importRequest)$('#import-error').textContent=error.message;}
+  finally {if(currentSession(version)&&request===state.importRequest)button.disabled=false;}
+}
+
+async function commitImport() {
+  const preview=state.importPreview;
+  if(state.user?.role!=='admin'||state.importBusy||!preview||preview.text!==$('#import-csv').value)return;
+  const version=state.sessionVersion, revision=state.importRevision;
+  state.importBusy=true;
+  $('#import-commit').disabled=true;$('#import-preview-button').disabled=true;
+  $('#import-csv').readOnly=true;$('#import-file').disabled=true;$('#import-error').textContent='';
+  try {
+    const result=await api('/api/import/commit',{method:'POST',body:{csv_text:preview.text,content_hash:preview.hash}});
+    if(!currentSession(version)||revision!==state.importRevision)return;
+    $('#import-dialog').close();resetImport();
+    toast(result.duplicate?`Batch already imported. ${result.imported_count} existing ticket(s).`:`Imported ${result.imported_count} ticket(s).`);
+    state.page=1;setView('tickets');
+  } catch(error) {if(currentSession(version)&&revision===state.importRevision)$('#import-error').textContent=error.message+' You can retry this batch safely.';}
+  finally {
+    if(currentSession(version)&&revision===state.importRevision){
+      state.importBusy=false;$('#import-csv').readOnly=false;$('#import-file').disabled=false;
+      $('#import-preview-button').disabled=false;$('#import-commit').disabled=!state.importPreview;
+    }
+  }
+}
+
 async function login(event) {
   event.preventDefault();$('#login-error').textContent='';
   const button=$('#login-form button[type="submit"]');button.disabled=true;
@@ -253,6 +329,11 @@ async function startup() {
   for(const id of ['new-ticket-overview','new-ticket-list'])$("#"+id).addEventListener('click',()=>$('#create-dialog').showModal());
   document.querySelectorAll('[data-close]').forEach(el=>el.addEventListener('click',()=>$('#'+el.dataset.close).close()));
   $('#create-form').addEventListener('submit',createTicket);
+  $('#import-tickets').addEventListener('click',()=>{resetImport();$('#import-dialog').showModal();$('#import-csv').focus();});
+  $('#import-form').addEventListener('submit',previewImport);
+  $('#import-csv').addEventListener('input',invalidateImport);
+  $('#import-file').addEventListener('change',loadImportFile);
+  $('#import-commit').addEventListener('click',commitImport);
   $('#save-ticket').addEventListener('click',saveTicket);
   $('#comment-form').addEventListener('submit',addComment);
   $('#mobile-menu').addEventListener('click',()=>{
