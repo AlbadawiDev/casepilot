@@ -118,14 +118,14 @@ class CasePilotTests(unittest.TestCase):
         code,full,_=self.request(f"/api/tickets/{tid}")
         self.assertEqual(code,200)
         self.assertEqual(full["ticket"]["status"],"open")
-        code,_,_=self.request(f"/api/tickets/{tid}","PATCH",{"status":"resolved"})
+        code,_,_=self.request(f"/api/tickets/{tid}","PATCH",{"status":"resolved", "expected_revision":1})
         self.assertEqual(code,409)  # no skipping investigation
-        code,upd,_=self.request(f"/api/tickets/{tid}","PATCH",{"status":"in_progress", "assignee_id":2})
+        code,upd,_=self.request(f"/api/tickets/{tid}","PATCH",{"status":"in_progress", "assignee_id":2, "expected_revision":1})
         self.assertEqual(code,200)
         self.assertIn("assignee_id",upd["updated"])
         code,_,_=self.request(f"/api/tickets/{tid}/comments","POST",{"body":"Checked with request owner."})
         self.assertEqual(code,201)
-        code,_,_=self.request(f"/api/tickets/{tid}","PATCH",{"status":"resolved"})
+        code,_,_=self.request(f"/api/tickets/{tid}","PATCH",{"status":"resolved", "expected_revision":2})
         self.assertEqual(code,200)
         code,full,_=self.request(f"/api/tickets/{tid}")
         self.assertEqual(code,200)
@@ -136,6 +136,87 @@ class CasePilotTests(unittest.TestCase):
         self.assertEqual(code,200)
         self.assertEqual(stats["total"],10)
         self.assertGreaterEqual(stats["resolved"],4)
+
+    def test_ticket_updates_require_a_valid_revision(self):
+        self.login()
+        for revision in (0, -1, True, 1.5, "1", [], {}):
+            code, _, _ = self.request('/api/tickets/1', 'PATCH',
+                                      {'priority': 'low', 'expected_revision': revision})
+            self.assertEqual(code, 400)
+        self.assertEqual(self.request('/api/tickets/1', 'PATCH', {'priority': 'low'})[0], 428)
+        self.assertEqual(self.request('/api/tickets/1', 'PATCH', {'expected_revision': 1})[0], 400)
+        self.assertEqual(self.request('/api/tickets/1')[1]['ticket']['revision'], 1)
+
+    def test_stale_ticket_edit_cannot_overwrite_fields_or_add_audit_events(self):
+        self.login()
+        before = self.request('/api/tickets/1')[1]
+        # Two browser windows can hold identical timestamps, but independent revisions.
+        with patch('main.utc_now', return_value=before['ticket']['updated_at']):
+            code, first, _ = self.request('/api/tickets/1', 'PATCH',
+                {'status': 'in_progress', 'priority': 'high', 'expected_revision': 1})
+            self.assertEqual((code, first['revision']), (200, 2))
+            code, conflict, _ = self.request('/api/tickets/1', 'PATCH',
+                {'status': 'in_progress', 'priority': 'low', 'assignee_id': 1, 'expected_revision': 1})
+        self.assertEqual(code, 409)
+        self.assertEqual(conflict['code'], 'ticket_conflict')
+        after = self.request('/api/tickets/1')[1]
+        self.assertEqual((after['ticket']['priority'], after['ticket']['assignee_id'], after['ticket']['revision']),
+                         ('high', before['ticket']['assignee_id'], 2))
+        self.assertEqual(len(after['audit']), len(before['audit']) + 2)
+        code, retried, _ = self.request('/api/tickets/1', 'PATCH',
+                                      {'priority': 'low', 'expected_revision': 2})
+        self.assertEqual((code, retried['revision']), (200, 3))
+
+    def test_concurrent_ticket_edits_have_exactly_one_winner(self):
+        self.login()
+        barrier = threading.Barrier(2)
+        def edit(priority):
+            barrier.wait(timeout=5)
+            result = self.request('/api/tickets/1', 'PATCH',
+                                  {'priority': priority, 'expected_revision': 1})
+            return priority, result
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(edit, ['low', 'medium']))
+        self.assertEqual(sorted(result[0] for _, result in results), [200, 409])
+        winner = next(priority for priority, result in results if result[0] == 200)
+        final = self.request('/api/tickets/1')[1]
+        self.assertEqual((final['ticket']['priority'], final['ticket']['revision']), (winner, 2))
+        self.assertEqual(sum(event['action'] == 'updated_priority' for event in final['audit']), 1)
+
+    def test_ticket_revision_and_audit_roll_back_together(self):
+        self.login()
+        before = self.request('/api/tickets/1')[1]
+        with connect(self.server.db_path) as db:
+            db.execute("CREATE TRIGGER fail_edit BEFORE INSERT ON audit_events "
+                       "WHEN NEW.action = 'updated_priority' BEGIN SELECT RAISE(ABORT, 'forced failure'); END")
+        self.assertEqual(self.request('/api/tickets/1', 'PATCH',
+                                     {'priority': 'low', 'expected_revision': 1})[0], 500)
+        self.assertEqual(self.request('/api/tickets/1')[1], before)
+
+    def test_noop_and_independent_notes_do_not_invalidate_ticket_edits(self):
+        self.login()
+        before = self.request('/api/tickets/1')[1]
+        code, noop, _ = self.request('/api/tickets/1', 'PATCH',
+                                    {'priority': 'critical', 'expected_revision': 1})
+        self.assertEqual((code, noop['revision'], noop['updated']), (200, 1, []))
+        self.assertEqual(self.request('/api/tickets/1')[1], before)
+        self.assertEqual(self.request('/api/tickets/1/comments', 'POST', {'body': 'Independent append-only note'})[0], 201)
+        self.assertEqual(self.request('/api/tickets/1', 'PATCH',
+                                     {'priority': 'high', 'expected_revision': 1})[0], 200)
+
+    def test_existing_ticket_databases_get_a_persistent_revision(self):
+        self.login()
+        with connect(self.server.db_path) as db:
+            db.execute('ALTER TABLE tickets DROP COLUMN revision')
+        init_db(self.server.db_path)
+        ticket = self.request('/api/tickets/1')[1]['ticket']
+        self.assertEqual((ticket['code'], ticket['revision']), ('CP-0001', 1))
+        self.assertEqual(self.request('/api/tickets/1', 'PATCH',
+                                     {'priority': 'high', 'expected_revision': 1})[0], 200)
+        init_db(self.server.db_path)
+        self.assertEqual(self.request('/api/tickets/1')[1]['ticket']['revision'], 2)
+        with connect(self.server.db_path) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM tickets').fetchone()[0], 9)
 
     def test_agent_cannot_reassign_and_can_comment(self):
         self.login("agent")
@@ -224,7 +305,7 @@ class CasePilotTests(unittest.TestCase):
         self.assertEqual(self.request('/api/tickets','POST',data)[0],400)
         self.assertEqual(self.request('/api/tickets/'+('9'*80))[0],404)
         self.assertEqual(self.request('/api/tickets/1','PATCH',{'assignee_id':True})[0],400)
-        self.assertEqual(self.request('/api/tickets/1','PATCH',{'assignee_id':9999})[0],400)
+        self.assertEqual(self.request('/api/tickets/1','PATCH',{'assignee_id':9999,'expected_revision':1})[0],400)
 
     def test_csv_formula_injection_is_neutralized(self):
         self.login()
