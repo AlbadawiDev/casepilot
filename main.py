@@ -89,7 +89,8 @@ def init_db(db_path: Path) -> None:
           priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','critical')),
           status TEXT NOT NULL CHECK(status IN ('open','in_progress','resolved')),
           requester TEXT NOT NULL, assignee_id INTEGER REFERENCES users(id),
-          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, due_at TEXT NOT NULL
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, due_at TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0)
         );
         CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
         CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated_at);
@@ -118,6 +119,9 @@ def init_db(db_path: Path) -> None:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
         if "password_iterations" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN password_iterations INTEGER NOT NULL DEFAULT 180000")
+        ticket_columns = {row["name"] for row in db.execute("PRAGMA table_info(tickets)")}
+        if "revision" not in ticket_columns:
+            db.execute("ALTER TABLE tickets ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
         existing = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if existing:
             return
@@ -162,10 +166,11 @@ def _create_ticket(db: sqlite3.Connection, title: str, desc: str, category: str,
 
 
 class APIError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, code: str | None = None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.code = code
 
 
 def required_text(data: dict, key: str, *, max_len: int, min_len: int = 1) -> str:
@@ -400,7 +405,7 @@ class DeskHandler(BaseHTTPRequestHandler):
                     raise APIError(403, "Cross-origin request refused")
             return self.route(method)
         except APIError as exc:
-            return self.respond(exc.status, {"error": exc.message})
+            return self.respond(exc.status, {"error": exc.message, **({"code": exc.code} if exc.code else {})})
         except (sqlite3.Error, OSError) as exc:
             self.log_error("Service error: %s", str(exc))
             return self.respond(500, {"error": "Internal service error"})
@@ -622,7 +627,7 @@ class DeskHandler(BaseHTTPRequestHandler):
         if method == "PATCH" and ticket_match:
             data = self.read_json()
             permitted = {"status", "priority", "assignee_id"}
-            if not data or set(data) - permitted:
+            if not data or set(data) - (permitted | {"expected_revision"}) or not set(data) & permitted:
                 raise APIError(400, "Invalid update fields")
             if "status" in data and data["status"] not in STATUSES:
                 raise APIError(400, "Unknown ticket status")
@@ -632,12 +637,21 @@ class DeskHandler(BaseHTTPRequestHandler):
                 self.authorize(admin=True)
                 if data["assignee_id"] is not None and (not isinstance(data["assignee_id"], int) or isinstance(data["assignee_id"], bool)):
                     raise APIError(400, "Assignee must be a user ID")
+            expected = data.pop("expected_revision", None)
+            if expected is None:
+                raise APIError(428, "Open the ticket and include its expected_revision before saving")
+            if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
+                raise APIError(400, "expected_revision must be a positive integer")
             ident = int(ticket_match.group(1))
             with connect(self.server.db_path) as db:
+                # Serialize read/check/write so two requests with the same revision
+                # cannot both succeed. Timestamps are not concurrency tokens.
                 db.execute("BEGIN IMMEDIATE")
                 old = db.execute("SELECT * FROM tickets WHERE id=?", (ident,)).fetchone()
                 if not old:
                     raise APIError(404, "Ticket not found")
+                if old["revision"] != expected:
+                    raise APIError(409, "Another teammate changed this ticket. Your edits were not saved. Discard edits and reload the latest version before trying again.", "ticket_conflict")
                 if "assignee_id" in data and data["assignee_id"] is not None:
                     u = db.execute("SELECT id FROM users WHERE id=?", (data["assignee_id"],)).fetchone()
                     if not u:
@@ -647,12 +661,16 @@ class DeskHandler(BaseHTTPRequestHandler):
                     if data["status"] not in next_steps[old["status"]]:
                         raise APIError(409, "Status change must follow the workflow")
                 changes = {k: v for k, v in data.items() if old[k] != v}
+                if changes:
+                    assignments = ", ".join(f"{key}=?" for key in changes)
+                    db.execute(f"UPDATE tickets SET {assignments}, updated_at=?, revision=revision+1 WHERE id=?",
+                               (*changes.values(), utc_now(), ident))
+                revision = old["revision"] + bool(changes)
                 for k, v in changes.items():
-                    db.execute(f"UPDATE tickets SET {k}=?, updated_at=? WHERE id=?", (v, utc_now(), ident))
                     db.execute("INSERT INTO audit_events (ticket_id,user_id,action,detail,created_at) VALUES (?,?,?,?,?)",
                        (ident, session["user"]["id"], f"updated_{k}", f"{k}: {old[k]} → {v}", utc_now()))
                 db.commit()
-            return self.respond(200, {"ok": True, "updated": list(changes)})
+            return self.respond(200, {"ok": True, "updated": list(changes), "revision": revision})
         if method == "POST" and comments_match:
             data = self.read_json()
             if set(data) != {"body"}:

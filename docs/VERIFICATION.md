@@ -64,3 +64,24 @@ The import regression tests verify:
 - Browser-source tests verify escaped preview markup, stale preview/account isolation, unchanged-preview/admin checks and preservation of the hash after a failed network request.
 
 The Playwright JavaScript library is present, but this runtime has no browser binary. The standard Chromium download returned zero-byte/truncated archives and was stopped. Therefore this extension has **no new browser walkthrough, desktop/mobile layout verification or verified UI screenshot**. The older screenshots and walkthrough above describe the earlier app version. Windows launchers, Docker runtime and remote CI were not rerun for this local extension.
+
+
+## Concurrent ticket edits - 2026-10-20
+
+Environment: Linux, Python 3.12.14, Node 24.19.0. Portfolio extension developed with coding-assistant support and synthetic data.
+
+Executed locally:
+
+```bash
+CASEPILOT_QUIET=1 python -W error::ResourceWarning -m unittest discover -s tests -v
+node --check static/app.js
+node --test tests/frontend.test.cjs
+python -m py_compile main.py
+git diff --check
+```
+
+Results: **35 HTTP integration tests passed in 54.382 seconds** and **19 frontend tests passed**, with no failures. Python compilation, JavaScript syntax and the diff whitespace check passed.
+
+Six new HTTP checks verify mandatory positive revision input, equal-timestamp stale writes, one winner across two barrier-synchronized HTTP requests, field/revision/audit rollback on a forced database error, no-op and independent-note behavior, and legacy migration without reseeding. Four new frontend checks verify conflict-code propagation, draft retention and explicit reload/retry, an obsolete conflict after account switching, and an in-flight note that completes after a conflict without discarding field edits or a newer note draft.
+
+No new browser walkthrough, remote CI result, Windows launcher test or production-load result is claimed here. Earlier screenshots describe earlier versions. The API now requires `expected_revision` for ticket PATCH requests; see [the contract and demonstration](CONCURRENT_EDITS.md).

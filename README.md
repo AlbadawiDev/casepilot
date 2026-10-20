@@ -13,13 +13,14 @@ CasePilot is designed as an interview-friendly demonstration of **full-stack dev
 - End-to-end workflow: open → in progress → resolved; reopening a closed ticket
 - Two authenticated demo roles: administrator and support agent
 - Administrative assignment, change tracking and internal notes
+- Concurrent-edit protection: stale changes cannot overwrite a teammate’s work; drafts stay visible until an explicit reload
 - Immutable activity events for every ticket action (app workflow does not offer edits or deletes)
 - CSV exports filtered to the current ticket list
 - Administrator CSV import with row-by-row preview, validation, atomic writes and duplicate-retry protection
 - SQLite persistence and deterministic seed dataset
 - Responsive design, keyboard-accessible rows and reduced-motion support
 - CSRF checking for state-changing actions, salted PBKDF2 password hashes, restrictive response headers, no third-party resources
-- 29 HTTP integration tests, 15 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
+- 35 HTTP integration tests, 19 frontend tests and a Windows/Linux CI matrix (Python 3.11 and 3.14)
 - Windows background launcher, readiness checks, logs and a process-identity-checked stop command
 
 ## Quick start on Windows
@@ -69,6 +70,12 @@ The CSV header contains `title,description,category,priority,requester` exactly 
 
 Preview never creates tickets. Import creates all validated tickets as open and unassigned in one SQLite transaction, records an audit event for each, and stores a batch receipt. An invalid row or a database failure leaves the whole batch unapplied. A changed preview is rejected. Re-sending an identical normalized batch returns its existing ticket IDs, even after restarting the server. BOM, line endings, header order and surrounding cell spaces do not create a new batch. This prevents retry duplicates; it does not deduplicate tickets across different batches. CSV exports have additional reporting columns and are not this import format.
 
+## Prevent stale ticket edits
+
+If two teammates open the same request, the first valid save advances its revision. The second save is rejected without overwriting fields or creating misleading audit entries. The dialog keeps unsaved field values and offers **Discard edits and reload latest** so the agent chooses when to load the newer record. It never silently retries old edits against a new version.
+
+See [the concurrency case study](docs/CONCURRENT_EDITS.md) for the two-window demo, API contract and verification evidence. Existing databases gain the revision column automatically; notes remain independent append-only updates.
+
 ## Architecture
 
 ```text
@@ -102,7 +109,7 @@ The code intentionally has a small deployment footprint so reviewers can start i
 | POST | `/api/import/preview` | Admin + CSRF: validate `csv_text` and return rows/errors/content hash |
 | POST | `/api/import/commit` | Admin + CSRF: atomically import `csv_text` matching `content_hash`; retries return the existing receipt |
 | GET | `/api/tickets/:id` | Detail + comments + audit |
-| PATCH | `/api/tickets/:id` | Change status / priority / assignee |
+| PATCH | `/api/tickets/:id` | Change status / priority / assignee; requires the detail’s `expected_revision` |
 | POST | `/api/tickets/:id/comments` | Internal note |
 | GET | `/api/activity` | Audit timeline |
 | GET | `/api/export.csv` | Filterable CSV export |
@@ -123,3 +130,5 @@ MIT (see `LICENSE`). Attribution and portfolio presentation should match the act
 
 The 2026-10-12 CSV extension was developed with coding-assistant support as a portfolio enhancement. It is a demonstration feature, not evidence of employment or a client deployment. The implementation and verification notes are available for review.
 
+
+The 2026-10-20 concurrency extension was developed with coding-assistant support as a portfolio enhancement. It is demonstrated with synthetic data, not a client deployment.

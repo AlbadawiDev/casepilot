@@ -5,7 +5,7 @@ const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (m
 const human = (value) => ({open:'Open', in_progress:'In progress', resolved:'Resolved', low:'Low', medium:'Medium', high:'High', critical:'Critical'}[value] || String(value));
 const dateText = (str) => str ? new Date(str).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '—';
 const initials = (str) => String(str || '—').split(/\s+/).slice(0, 2).map((s)=>s[0]||'').join('').toUpperCase();
-const state = {user:null, csrf:'', users:[], view:'overview', tickets:[], selected:null, toastTimer:null, searchTimer:null, page:1, pages:1, sessionVersion:0, ticketRequest:0, overviewRequest:0, activityRequest:0, detailRequest:0, importPreview:null, importRevision:0, importRequest:0, importBusy:false};
+const state = {user:null, csrf:'', users:[], view:'overview', tickets:[], selected:null, toastTimer:null, searchTimer:null, page:1, pages:1, sessionVersion:0, ticketRequest:0, overviewRequest:0, activityRequest:0, detailRequest:0, detailConflict:false, importPreview:null, importRevision:0, importRequest:0, importBusy:false};
 
 // A response belongs to the sign-in that started it, even when another account
 // has since signed in. Request counters also prevent older reads winning races.
@@ -38,7 +38,10 @@ async function api(path, {method='GET', body=undefined}={}) {
   } catch(error) {if(sessionVersion===state.sessionVersion)connectionStatus(false);throw new Error('Cannot reach the workspace. Check that the local server is running.');}
   const data = await res.json().catch(()=>({error:'Unexpected server response'}));
   if (res.status===401 && currentSession(sessionVersion) && path!=='/api/login') clearSession('Your session ended. Sign in again.');
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const error = new Error(data.error || `Request failed (${res.status})`);
+    error.status=res.status;error.code=data.code;throw error;
+  }
   return data;
 }
 
@@ -149,12 +152,19 @@ async function loadActivity() {
   } catch(e) {if(currentSession(version)&&request===state.activityRequest)toast('Could not load audit history: '+e.message);}
 }
 
+function renderDiscussion(d) {
+    $('#detail-comments').innerHTML=d.comments.length ? d.comments.map(c=>`<div class="comment"><strong>${esc(c.author)}</strong><small>${esc(dateText(c.created_at))}</small><p>${esc(c.body)}</p></div>`).join('') : '<p class="empty-comment">No notes yet. Add the first update.</p>';
+    $('#detail-audit').innerHTML=d.audit.map(a=>`<div class="mini-event"><div><strong>${esc(a.actor)}</strong> · ${esc(a.detail)}<time>${esc(dateText(a.created_at))}</time></div></div>`).join('');
+}
+
 async function showTicket(id) {
   const version=state.sessionVersion, request=++state.detailRequest;
   try {
     const d=await api('/api/tickets/'+Number(id));
     if(!currentSession(version)||request!==state.detailRequest)return;
-    state.selected=d.ticket;
+    state.selected=d.ticket;state.detailConflict=false;
+    $('#reload-ticket').classList.add('hidden');$('#save-ticket').disabled=false;
+    $('#comment-form button').disabled=false;
     $('#detail-code').textContent=d.ticket.code;
     $('#detail-title').textContent=d.ticket.title;
     $('#detail-description').textContent=d.ticket.description;
@@ -171,15 +181,15 @@ async function showTicket(id) {
     sel.disabled=state.user.role!=='admin';
     $('#detail-error').textContent='';
     $('#comment-text').value='';
-    $('#detail-comments').innerHTML=d.comments.length ? d.comments.map(c=>`<div class="comment"><strong>${esc(c.author)}</strong><small>${esc(dateText(c.created_at))}</small><p>${esc(c.body)}</p></div>`).join('') : '<p class="empty-comment">No notes yet. Add the first update.</p>';
-    $('#detail-audit').innerHTML=d.audit.map(a=>`<div class="mini-event"><div><strong>${esc(a.actor)}</strong> · ${esc(a.detail)}<time>${esc(dateText(a.created_at))}</time></div></div>`).join('');
+    renderDiscussion(d);
     if(!$('#detail-dialog').open)$('#detail-dialog').showModal();
   } catch(e) {if(currentSession(version)&&request===state.detailRequest)toast('Could not open ticket: '+e.message);}
 }
 
 async function saveTicket() {
-  if(!state.selected)return;
-  const t=state.selected, updated={};
+  if(!state.selected||state.detailConflict)return;
+  const t=state.selected, updated={}, version=state.sessionVersion, detailRequest=state.detailRequest;
+  const stillEditing=()=>currentSession(version)&&state.selected?.id===t.id&&detailRequest===state.detailRequest;
   const status=$('#detail-status').value, priority=$('#detail-priority').value;
   const assign=$('#detail-assignee').value, newAssignee=assign?Number(assign):null;
   if(status!==t.status)updated.status=status;
@@ -188,25 +198,41 @@ async function saveTicket() {
   if(!Object.keys(updated).length){toast('No changes to save.');return;}
   const button=$('#save-ticket');button.disabled=true;
   try {
-    await api(`/api/tickets/${t.id}`,{method:'PATCH',body:updated});
+    await api(`/api/tickets/${t.id}`,{method:'PATCH',body:{...updated,expected_revision:t.revision}});
+    if(!stillEditing())return;
     $('#detail-dialog').close();
     toast(`${t.code} updated.`);
     setView(state.view);
-  } catch(e) {$('#detail-error').textContent=e.message;}
-  finally {button.disabled=false;}
+  } catch(e) {
+    if(!stillEditing())return;
+    $('#detail-error').textContent=e.message;
+    if(e.code==='ticket_conflict'){
+      state.detailConflict=true;
+      $('#reload-ticket').classList.remove('hidden');
+    }
+  } finally {if(stillEditing())button.disabled=state.detailConflict;}
 }
 
 async function addComment(event) {
   event.preventDefault();
   if(!state.selected)return;
+  const ticket=state.selected, version=state.sessionVersion, request=state.detailRequest;
+  const stillEditing=()=>currentSession(version)&&state.selected?.id===ticket.id&&request===state.detailRequest;
+  const body=$('#comment-text').value;
   const button=$('#comment-form button');button.disabled=true;
   try {
-    await api(`/api/tickets/${state.selected.id}/comments`,{method:'POST',body:{body:$('#comment-text').value}});
-    await showTicket(state.selected.id);
+    await api(`/api/tickets/${ticket.id}/comments`,{method:'POST',body:{body}});
+    if(!stillEditing())return;
+    if($('#comment-text').value===body)$('#comment-text').value='';
+    // Notes append independently. Refresh their history without replacing the
+    // field draft, its revision, or an edit conflict discovered while posting.
+    const discussion=await api(`/api/tickets/${ticket.id}`);
+    if(!stillEditing())return;
+    renderDiscussion(discussion);
     toast('Internal note added.');
     setView(state.view);
-  } catch(e) {toast(e.message);}
-  finally {button.disabled=false;}
+  } catch(e) {if(stillEditing())toast(e.message);}
+  finally {if(stillEditing())button.disabled=false;}
 }
 
 async function createTicket(event) {
@@ -335,6 +361,7 @@ async function startup() {
   $('#import-file').addEventListener('change',loadImportFile);
   $('#import-commit').addEventListener('click',commitImport);
   $('#save-ticket').addEventListener('click',saveTicket);
+  $('#reload-ticket').addEventListener('click',()=>{if(state.selected)showTicket(state.selected.id);});
   $('#comment-form').addEventListener('submit',addComment);
   $('#mobile-menu').addEventListener('click',()=>{
     const open=$('#sidebar').classList.toggle('open');updateNavigation();

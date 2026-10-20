@@ -62,7 +62,7 @@ test('network failure shows connection feedback', async () => {
 
 const adminSession = `{user:{id:1,name:'Demo administrator',role:'admin'},csrf:'old-token'}`;
 const agentSession = `{user:{id:2,name:'Demo agent',role:'agent'},csrf:'new-token'}`;
-const detail = id => `({ticket:{id:${id},code:'CP-000${id}',title:'Request ${id}',description:'Synthetic request',requester:'Demo',status:'open',priority:'low',category:'Other',assignee_id:null},comments:[],audit:[]})`;
+const detail = id => `({ticket:{id:${id},code:'CP-000${id}',title:'Request ${id}',description:'Synthetic request',requester:'Demo',status:'open',priority:'low',category:'Other',assignee_id:null,revision:1},comments:[],audit:[]})`;
 
 test('older detail responses cannot replace the last ticket opened', async () => {
   const { run, nodes } = loadFrontend();
@@ -187,3 +187,79 @@ test('a failed import retains the same batch hash for a safe duplicate retry', a
   assert.match(nodes.get('#toast').textContent,/already imported/);
 });
 
+
+
+test('ticket conflict preserves edits and requires an explicit reload before retry', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); api=async()=>${detail(1)};`);
+  await run('showTicket(1)');
+  run(`$('#detail-status').value='in_progress'; $('#detail-priority').value='critical';
+    $('#comment-text').value='Unsent investigation note'; globalThis.calls=[];
+    api=async(path,options)=>{calls.push(options.body);const error=new Error('Newer version exists');error.code='ticket_conflict';throw error;};`);
+  await run('saveTicket()');
+  assert.equal(run('calls[0].expected_revision'), 1);
+  assert.equal(run('state.detailConflict'), true);
+  assert.equal(nodes.get('#detail-status').value, 'in_progress');
+  assert.equal(nodes.get('#detail-priority').value, 'critical');
+  assert.equal(nodes.get('#comment-text').value, 'Unsent investigation note');
+  assert.equal(nodes.get('#save-ticket').disabled, true);
+  assert.equal(nodes.get('#detail-dialog').open, true);
+  await run('saveTicket()');
+  assert.equal(run('calls.length'), 1);
+  run(`api=async()=>({...${detail(1)},ticket:{...${detail(1)}.ticket,priority:'high',revision:2}});`);
+  await run('showTicket(1)');
+  assert.equal(run('state.detailConflict'), false);
+  assert.equal(nodes.get('#save-ticket').disabled, false);
+  assert.equal(nodes.get('#detail-priority').value, 'high');
+  assert.equal(nodes.get('#detail-error').textContent, '');
+  run(`$('#detail-priority').value='medium'; setView=()=>{};
+    api=async(path,options)=>{calls.push(options.body);return {ok:true,revision:3};};`);
+  await run('saveTicket()');
+  assert.equal(run('calls[1].expected_revision'), 2);
+  assert.equal(nodes.get('#detail-dialog').open, false);
+});
+
+test('a delayed edit conflict cannot change a different ticket or account', async () => {
+  const { run, nodes } = loadFrontend();
+  run(`setAuthenticated(${adminSession}); api=async()=>${detail(1)};`);
+  await run('showTicket(1)');
+  run(`$('#detail-priority').value='critical'; api=async()=>new Promise((resolve,reject)=>globalThis.rejectEdit=reject);`);
+  const pending=run('saveTicket()');
+  run(`clearSession();setAuthenticated(${agentSession});api=async()=>${detail(2)};`);
+  await run('showTicket(2)');
+  run(`const error=new Error('Old account conflict');error.code='ticket_conflict';rejectEdit(error);`);
+  await pending;
+  assert.equal(run('state.selected.id'), 2);
+  assert.equal(run('state.detailConflict'), false);
+  assert.equal(nodes.get('#detail-error').textContent, '');
+  assert.equal(nodes.get('#save-ticket').disabled, false);
+});
+
+test('API errors retain machine-readable conflict codes', async () => {
+  const { run }=loadFrontend();
+  run(`fetch=async()=>({status:409,ok:false,json:async()=>({error:'Changed ticket',code:'ticket_conflict'})});`);
+  await assert.rejects(run(`api('/api/tickets/1')`), error=>error.status===409&&error.code==='ticket_conflict');
+});
+
+
+test('a note completing after a ticket conflict cannot discard the field draft', async () => {
+  const { run, nodes }=loadFrontend();
+  run(`setAuthenticated(${adminSession}); api=async()=>${detail(1)};`);
+  await run('showTicket(1)');
+  run(`$('#detail-priority').value='critical';$('#comment-text').value='First investigation note';setView=()=>{};
+    api=async(path,options)=>{
+      if(path.endsWith('/comments'))return new Promise(resolve=>globalThis.finishNote=resolve);
+      if(options?.method==='PATCH'){const error=new Error('Changed elsewhere');error.code='ticket_conflict';throw error;}
+      return {...${detail(1)},ticket:{...${detail(1)}.ticket,priority:'high',revision:2},comments:[{author:'Demo',body:'First investigation note'}]};
+    };`);
+  const note=run('addComment({preventDefault(){}})');
+  await run('saveTicket()');
+  run(`$('#comment-text').value='Second unsent note';finishNote({ok:true});`);
+  await note;
+  assert.equal(run('state.detailConflict'), true);
+  assert.equal(run('state.selected.revision'), 1);
+  assert.equal(nodes.get('#detail-priority').value, 'critical');
+  assert.equal(nodes.get('#comment-text').value, 'Second unsent note');
+  assert.equal(nodes.get('#save-ticket').disabled, true);
+  assert.match(nodes.get('#detail-comments').innerHTML, /First investigation note/);
+});
